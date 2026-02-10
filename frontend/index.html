@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>RubberBand</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0a0a0a;
+      --surface: #111111;
+      --border: #1a1a1a;
+      --text: #f0f0f0;
+      --text-mid: #b0b0b0;
+      --text-dim: #888888;
+      --green: #4ade80;
+      --green-dim: rgba(74,222,128,0.12);
+      --red: #f87171;
+      --red-dim: rgba(248,113,113,0.12);
+      --blue: #60a5fa;
+      --yellow: #fbbf24;
+    }
+
+    body {
+      font-family: 'JetBrains Mono', monospace;
+      background: var(--bg);
+      color: var(--text);
+      height: 100dvh;
+      overflow: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .container {
+      max-width: 430px;
+      margin: 0 auto;
+      padding: 12px 14px;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    /* Header */
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .logo {
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--green);
+      letter-spacing: 1px;
+    }
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10px;
+      color: var(--text-dim);
+      letter-spacing: 1px;
+    }
+    .dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--red);
+    }
+    .dot.connected { background: var(--green); box-shadow: 0 0 6px var(--green); }
+
+    /* Price + Action side by side */
+    .top-row {
+      display: flex;
+      gap: 6px;
+      align-items: stretch;
+    }
+    .price-card {
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 10px 8px;
+    }
+    #price {
+      font-size: 32px;
+      font-weight: 700;
+      letter-spacing: -1px;
+      line-height: 1;
+    }
+    .action-card {
+      width: 110px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      border-radius: 8px;
+      padding: 10px 6px;
+      transition: all 0.2s;
+    }
+    .action-label {
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 9px;
+      letter-spacing: 1.5px;
+      color: var(--text-dim);
+      margin-bottom: 2px;
+    }
+    #action-text {
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: 3px;
+      line-height: 1;
+    }
+    #signal-pct {
+      font-size: 11px;
+      font-weight: 600;
+      margin-top: 2px;
+    }
+    .action-card.buy {
+      background: var(--green-dim); border: 1px solid var(--green); color: var(--green);
+      animation: pulse-buy 1s infinite;
+    }
+    .action-card.sell {
+      background: var(--red-dim); border: 1px solid var(--red); color: var(--red);
+      animation: pulse-sell 1s infinite;
+    }
+    .action-card.wait {
+      background: var(--surface); border: 1px solid var(--border); color: var(--text-dim);
+    }
+    @keyframes pulse-buy {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(74,222,128,0.3); }
+      50% { box-shadow: 0 0 16px 2px rgba(74,222,128,0.12); }
+    }
+    @keyframes pulse-sell {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(248,113,113,0.3); }
+      50% { box-shadow: 0 0 16px 2px rgba(248,113,113,0.12); }
+    }
+
+    /* Gauge */
+    .gauge-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .gauge-label {
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 9px;
+      letter-spacing: 1px;
+      color: var(--text-dim);
+      white-space: nowrap;
+    }
+    .gauge-track {
+      flex: 1; height: 5px;
+      background: var(--border);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .gauge-fill {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 0.3s ease;
+    }
+    .gauge-fill.low { background: var(--text-dim); }
+    .gauge-fill.mid { background: var(--yellow); }
+    .gauge-fill.high { background: var(--green); }
+
+    /* Levels */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+    .card-title {
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 9px;
+      letter-spacing: 1.5px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      margin-bottom: 5px;
+    }
+    .levels-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr 1fr;
+      gap: 4px;
+    }
+    .level-item { display: flex; flex-direction: column; gap: 1px; }
+    .level-label {
+      font-size: 8px;
+      letter-spacing: 0.5px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+    }
+    .level-value { font-size: 13px; font-weight: 600; }
+    .level-value.green { color: var(--green); }
+    .level-value.red { color: var(--red); }
+    .level-value.blue { color: var(--blue); }
+    .level-value.yellow { color: var(--yellow); }
+
+    /* Chart */
+    .chart-section {
+      flex: 1;
+      min-height: 0;
+      max-height: 180px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 8px;
+      display: flex;
+      flex-direction: column;
+    }
+    .chart-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 3px;
+    }
+    .chart-wrap { flex: 1; min-height: 0; }
+    #chart { width: 100%; height: 100%; }
+    .legend {
+      display: flex;
+      gap: 10px;
+      font-size: 8px;
+      color: var(--text-dim);
+      margin-top: 3px;
+    }
+    .legend-item { display: flex; align-items: center; gap: 3px; }
+    .legend-dot { width: 8px; height: 2px; border-radius: 1px; }
+
+    /* Window bar */
+    .window-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 9px;
+      color: var(--text-dim);
+    }
+    .window-track {
+      flex: 1; height: 3px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    #window-fill {
+      height: 100%;
+      background: var(--text-dim);
+      border-radius: 2px;
+      transition: width 0.5s;
+    }
+
+    /* Timer */
+    .timer-section {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .timer-section .card-title {
+      margin: 0;
+      white-space: nowrap;
+    }
+    #timer-display {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      flex: 1;
+      text-align: center;
+      line-height: 1;
+    }
+    #timer-display.done { color: var(--green); }
+    #timer-display.running { color: var(--text); }
+    #timer-display.idle { color: var(--text-dim); }
+    input[type="number"] {
+      width: 52px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      color: var(--text);
+      padding: 6px 6px;
+      font-family: inherit;
+      font-size: 13px;
+      text-align: center;
+      outline: none;
+    }
+    input[type="number"]:focus { border-color: var(--green); }
+    input[type="number"]::placeholder { color: var(--text-dim); }
+    input[type="number"]::-webkit-inner-spin-button,
+    input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+    input[type="number"] { -moz-appearance: textfield; }
+
+    button {
+      background: var(--border);
+      border: 1px solid var(--border);
+      color: var(--text-mid);
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 10px;
+      font-weight: 600;
+      padding: 6px 12px;
+      border-radius: 5px;
+      cursor: pointer;
+      letter-spacing: 0.5px;
+      white-space: nowrap;
+      transition: all 0.15s;
+    }
+    button:active { transform: scale(0.96); }
+    .btn-green { background: var(--green-dim); border-color: var(--green); color: var(--green); }
+    .btn-red { background: var(--red-dim); border-color: var(--red); color: var(--red); }
+
+    /* Desktop */
+    @media (min-width: 600px) {
+      .container { max-width: 480px; padding: 16px 20px; gap: 8px; }
+      #price { font-size: 38px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+
+    <!-- Header -->
+    <div class="header">
+      <div class="logo">RubberBand</div>
+      <div class="status">
+        <div id="connection-dot" class="dot"></div>
+        <span id="connection-text">OFFLINE</span>
+      </div>
+    </div>
+
+    <!-- Price + Action -->
+    <div class="top-row">
+      <div class="price-card">
+        <div id="price">$0.00</div>
+      </div>
+      <div id="action-card" class="action-card wait">
+        <div class="action-label">SIGNAL</div>
+        <div id="action-text">WAIT</div>
+        <div id="signal-pct">0%</div>
+      </div>
+    </div>
+
+    <!-- Window bar -->
+    <div class="window-row">
+      <span>TIME WINDOW</span>
+      <div class="window-track"><div id="window-fill" style="width:0%"></div></div>
+      <span id="tick-count">0</span>
+    </div>
+
+    <!-- Gauge -->
+    <div class="gauge-row">
+      <span class="gauge-label">STRENGTH</span>
+      <div class="gauge-track">
+        <div id="gauge-fill" class="gauge-fill low" style="width:0%"></div>
+      </div>
+    </div>
+
+    <!-- 5-Min Levels -->
+    <div class="card">
+      <div class="card-title">5-Min Levels</div>
+      <div class="levels-grid">
+        <div class="level-item">
+          <span class="level-label">Support</span>
+          <span id="support" class="level-value green">---</span>
+        </div>
+        <div class="level-item">
+          <span class="level-label">Resist</span>
+          <span id="resistance" class="level-value red">---</span>
+        </div>
+        <div class="level-item">
+          <span class="level-label">Mode</span>
+          <span id="mode" class="level-value yellow">---</span>
+        </div>
+        <div class="level-item">
+          <span class="level-label">VWAP</span>
+          <span id="vwap" class="level-value blue">---</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chart -->
+    <div class="chart-section">
+      <div class="chart-head">
+        <span class="card-title" style="margin:0">Live Chart</span>
+        <div class="legend">
+          <div class="legend-item"><div class="legend-dot" style="background:var(--green)"></div>Sup</div>
+          <div class="legend-item"><div class="legend-dot" style="background:var(--red)"></div>Res</div>
+          <div class="legend-item"><div class="legend-dot" style="background:var(--blue)"></div>VWAP</div>
+        </div>
+      </div>
+      <div class="chart-wrap">
+        <canvas id="chart"></canvas>
+      </div>
+    </div>
+
+    <!-- Timer -->
+    <div class="timer-section">
+      <input type="number" id="input-mins" placeholder="5" min="1" max="60" />
+      <span class="card-title" style="margin:0">MIN</span>
+      <div id="timer-display" class="idle">--:--</div>
+      <button id="btn-start" class="btn-green">Start</button>
+      <button id="btn-reset" class="btn-red">Reset</button>
+    </div>
+
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
