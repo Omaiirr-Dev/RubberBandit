@@ -6,8 +6,8 @@
   let ws;
   let state = {};
   let priceHistory = [];
-  const MAX_CHART_POINTS = 200;
-  const CANDLE_GROUP = 4; // ticks per candle
+  const MAX_CHART_POINTS = 120;
+  const CANDLE_GROUP = 3; // ticks per candle
 
   // Timer state — uses absolute timestamps so it works when backgrounded
   let timerEndAt = null; // Date.now() ms when timer finishes
@@ -128,102 +128,83 @@
     canvas.width = rect.width * dpr;
     canvas.height = rect.height * dpr;
     ctx.scale(dpr, dpr);
-    const totalW = rect.width;
+    const w = rect.width;
     const h = rect.height;
-    const rightMargin = 38; // space for price labels
-    const w = totalW - rightMargin;
-    const pad = 4; // top/bottom padding
 
-    ctx.clearRect(0, 0, totalW, h);
+    ctx.clearRect(0, 0, w, h);
 
-    const candles = buildCandles(priceHistory);
-    const allPrices = priceHistory;
-    let min = Math.min(...allPrices) - 0.03;
-    let max = Math.max(...allPrices) + 0.03;
+    const prices = priceHistory;
+    const min = Math.min(...prices) - 0.05;
+    const max = Math.max(...prices) + 0.05;
     const range = max - min || 1;
 
-    const toY = (p) => pad + (h - pad * 2) * (1 - (p - min) / range);
+    const toY = (p) => h - ((p - min) / range) * h;
 
-    // --- Horizontal level lines with right-side labels ---
-    function drawLevel(price, color, dash) {
-      if (price <= 0) return;
-      const y = toY(price);
-      if (y < 0 || y > h) return;
-      ctx.strokeStyle = color;
+    // Support line
+    if (state.support_floor > 0) {
+      ctx.strokeStyle = "rgba(74, 222, 128, 0.3)";
       ctx.lineWidth = 1;
-      ctx.setLineDash(dash);
+      ctx.setLineDash([4, 4]);
       ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(w, y);
+      ctx.moveTo(0, toY(state.support_floor));
+      ctx.lineTo(w, toY(state.support_floor));
       ctx.stroke();
       ctx.setLineDash([]);
-      // Label on right
-      ctx.font = "9px 'JetBrains Mono', monospace";
-      ctx.fillStyle = color;
-      ctx.textAlign = "left";
-      ctx.fillText(price.toFixed(2), w + 4, y + 3);
+    }
+    // Resistance line
+    if (state.resistance_ceiling > 0) {
+      ctx.strokeStyle = "rgba(248, 113, 113, 0.3)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(0, toY(state.resistance_ceiling));
+      ctx.lineTo(w, toY(state.resistance_ceiling));
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    // VWAP line
+    if (state.vwap > 0) {
+      ctx.strokeStyle = "rgba(96, 165, 250, 0.3)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([2, 2]);
+      ctx.beginPath();
+      ctx.moveTo(0, toY(state.vwap));
+      ctx.lineTo(w, toY(state.vwap));
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
 
-    drawLevel(state.support_floor, "rgba(74,222,128,0.5)", [4, 4]);
-    drawLevel(state.resistance_ceiling, "rgba(248,113,113,0.5)", [4, 4]);
-    drawLevel(state.vwap, "rgba(96,165,250,0.5)", [2, 3]);
-
-    // --- Price axis labels (high/low of visible range) ---
-    ctx.font = "8px 'JetBrains Mono', monospace";
-    ctx.fillStyle = "#555";
-    ctx.textAlign = "left";
-    ctx.fillText(max.toFixed(2), w + 4, pad + 6);
-    ctx.fillText(min.toFixed(2), w + 4, h - pad + 2);
-
-    // --- Candles ---
+    // Mini candles
+    const candles = buildCandles(prices);
     if (candles.length > 0) {
       const gap = 1;
-      const candleW = Math.max(2, (w - gap * candles.length) / candles.length);
+      const candleW = Math.min(4, Math.max(1.5, (w - gap * candles.length) / candles.length));
+      const totalCandleW = candles.length * (candleW + gap);
+      const offsetX = w - totalCandleW; // right-align candles
 
       for (let i = 0; i < candles.length; i++) {
         const c = candles[i];
-        const x = i * (candleW + gap);
+        const x = offsetX + i * (candleW + gap);
         const bullish = c.close >= c.open;
-        const bodyColor = bullish ? "rgba(74,222,128,0.85)" : "rgba(248,113,113,0.85)";
-        const wickColor = bullish ? "rgba(74,222,128,0.4)" : "rgba(248,113,113,0.4)";
+        const color = bullish ? "rgba(74,222,128,0.8)" : "rgba(248,113,113,0.8)";
+        const wickColor = bullish ? "rgba(74,222,128,0.35)" : "rgba(248,113,113,0.35)";
 
-        // Wick (high-low line)
+        // Thin wick
         const wickX = x + candleW / 2;
         ctx.strokeStyle = wickColor;
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 0.5;
         ctx.beginPath();
         ctx.moveTo(wickX, toY(c.high));
         ctx.lineTo(wickX, toY(c.low));
         ctx.stroke();
 
-        // Body (open-close rect)
+        // Tiny body
         const bodyTop = toY(Math.max(c.open, c.close));
         const bodyBot = toY(Math.min(c.open, c.close));
         const bodyH = Math.max(1, bodyBot - bodyTop);
-        ctx.fillStyle = bodyColor;
+        ctx.fillStyle = color;
         ctx.fillRect(x, bodyTop, candleW, bodyH);
       }
-    }
-
-    // --- Current price tag on right ---
-    if (state.price > 0) {
-      const curY = toY(state.price);
-      // Small tag background
-      ctx.fillStyle = "#f0f0f0";
-      ctx.fillRect(w + 1, curY - 6, rightMargin - 2, 12);
-      ctx.font = "bold 8px 'JetBrains Mono', monospace";
-      ctx.fillStyle = "#0a0a0a";
-      ctx.textAlign = "left";
-      ctx.fillText(state.price.toFixed(2), w + 4, curY + 3);
-      // Dotted line across chart
-      ctx.strokeStyle = "rgba(240,240,240,0.25)";
-      ctx.lineWidth = 1;
-      ctx.setLineDash([2, 2]);
-      ctx.beginPath();
-      ctx.moveTo(0, curY);
-      ctx.lineTo(w, curY);
-      ctx.stroke();
-      ctx.setLineDash([]);
     }
   }
 
