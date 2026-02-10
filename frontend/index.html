@@ -22,6 +22,8 @@
       --red-dim: rgba(248,113,113,0.12);
       --blue: #60a5fa;
       --yellow: #fbbf24;
+      --cyan: #22d3ee;
+      --cyan-dim: rgba(34,211,238,0.12);
     }
 
     body {
@@ -109,6 +111,58 @@
       color: var(--yellow);
       background: rgba(251,191,36,0.1);
     }
+
+    /* Context scan button */
+    .ctx-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 9px;
+      font-weight: 600;
+      padding: 4px 8px;
+      border-radius: 5px;
+      cursor: pointer;
+      letter-spacing: 0.5px;
+      white-space: nowrap;
+    }
+    .ctx-btn.active {
+      border-color: var(--cyan);
+      color: var(--cyan);
+      background: var(--cyan-dim);
+    }
+    .ctx-btn.loading {
+      border-color: var(--cyan);
+      color: var(--cyan);
+      animation: demo-pulse 1s infinite;
+    }
+
+    /* Context banner */
+    .context-banner {
+      display: none;
+      background: var(--cyan-dim);
+      border: 1px solid var(--cyan);
+      border-radius: 6px;
+      padding: 3px 8px;
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 9px;
+      font-weight: 700;
+      color: var(--cyan);
+      text-align: center;
+      letter-spacing: 1.5px;
+    }
+    .context-banner.show { display: block; }
+
+    /* Context levels card */
+    .context-card {
+      display: none;
+      background: var(--surface);
+      border: 1px solid var(--cyan);
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+    .context-card.show { display: block; }
+    .level-value.cyan { color: var(--cyan); }
 
     /* Desktop row wrapper — single column on mobile */
     .desktop-row { display: contents; }
@@ -414,6 +468,9 @@
       .help-btn { width: 30px; height: 30px; font-size: 15px; }
       .status { font-size: 12px; }
       .demo-banner { font-size: 11px; padding: 5px 12px; }
+      .ctx-btn { font-size: 11px; padding: 5px 12px; }
+      .context-banner { font-size: 11px; padding: 5px 12px; }
+      .context-card { padding: 14px 16px; }
       .cheat-sheet { font-size: 11px; padding: 12px 16px; }
 
       /* Two-column: price+action left, levels right */
@@ -471,6 +528,7 @@
     <div class="header">
       <div class="logo">RubberBand</div>
       <div style="display:flex;align-items:center;gap:6px;">
+        <button id="ctx-btn" class="ctx-btn">PULL 30M</button>
         <button id="demo-btn" class="demo-btn">DEMO</button>
         <button id="help-btn" class="help-btn" onclick="document.getElementById('cheat-sheet').classList.toggle('show');this.classList.toggle('active')">?</button>
         <div class="status">
@@ -483,6 +541,9 @@
     <!-- Demo Banner -->
     <div id="demo-banner" class="demo-banner">DEMO MODE — FAKE PRICES</div>
 
+    <!-- Context Banner -->
+    <div id="context-banner" class="context-banner">30M CONTEXT ACTIVE — <span id="ctx-range"></span></div>
+
     <!-- Cheat Sheet -->
     <div id="cheat-sheet" class="cheat-sheet">
       <div class="cs-row"><span class="cs-term" style="color:var(--green)">SUPPORT</span><span class="cs-desc">Price floor — avg of 5 lowest prices. Good area to buy.</span></div>
@@ -493,6 +554,7 @@
       <div class="cs-row"><span class="cs-term" style="color:var(--red)">SELL</span><span class="cs-desc">Price near resistance & above VWAP — may drop soon.</span></div>
       <div class="cs-row"><span class="cs-term" style="color:var(--text-dim)">WAIT</span><span class="cs-desc">No strong signal — price is in the middle. Stay patient.</span></div>
       <div class="cs-row"><span class="cs-term" style="color:var(--text-mid)">STRENGTH</span><span class="cs-desc">0-100% confidence in the signal. Higher = stronger.</span></div>
+      <div class="cs-row"><span class="cs-term" style="color:var(--cyan)">CONTEXT</span><span class="cs-desc">30-min historical range. Gives signals broader reference.</span></div>
     </div>
 
     <!-- Desktop: two-column row -->
@@ -533,6 +595,24 @@
             </div>
           </div>
         </div>
+        <!-- 30-Min Context Levels -->
+        <div id="context-card" class="context-card">
+          <div class="card-title" style="color:var(--cyan)">30-Min Context</div>
+          <div class="levels-grid" style="grid-template-columns:1fr 1fr 1fr;">
+            <div class="level-item">
+              <span class="level-label">Ctx High</span>
+              <span id="ctx-high" class="level-value cyan">---</span>
+            </div>
+            <div class="level-item">
+              <span class="level-label">Ctx Low</span>
+              <span id="ctx-low" class="level-value cyan">---</span>
+            </div>
+            <div class="level-item">
+              <span class="level-label">Ctx VWAP</span>
+              <span id="ctx-vwap" class="level-value cyan">---</span>
+            </div>
+          </div>
+        </div>
         <!-- Window bar -->
         <div class="window-row">
           <span>TIME WINDOW</span>
@@ -566,6 +646,7 @@
           <div class="legend-item"><div class="legend-dot" style="background:var(--green)"></div>Sup</div>
           <div class="legend-item"><div class="legend-dot" style="background:var(--red)"></div>Res</div>
           <div class="legend-item"><div class="legend-dot" style="background:var(--blue)"></div>VWAP</div>
+          <div class="legend-item"><div class="legend-dot" style="background:var(--cyan)"></div>Ctx</div>
         </div>
       </div>
       <div class="chart-wrap">
@@ -574,6 +655,6 @@
     </div>
 
   </div>
-  <script src="/static/app.js?v=16"></script>
+  <script src="/static/app.js?v=17"></script>
 </body>
 </html>

@@ -70,11 +70,49 @@
     wasDemo = isDemo;
   }
 
+  // ---- Context ----
+
+  function updateContextUI(s) {
+    const banner = $("#context-banner");
+    const btn = $("#ctx-btn");
+    const card = $("#context-card");
+
+    if (s.context_active) {
+      banner.classList.add("show");
+      btn.classList.remove("loading");
+      btn.classList.add("active");
+      btn.textContent = "CTX ON";
+      card.classList.add("show");
+      // Update range display
+      const range = s.context_high > 0 && s.context_low > 0
+        ? `$${s.context_low.toFixed(2)} — $${s.context_high.toFixed(2)}`
+        : "";
+      $("#ctx-range").textContent = range;
+      $("#ctx-high").textContent = s.context_high > 0 ? `$${s.context_high.toFixed(2)}` : "---";
+      $("#ctx-low").textContent = s.context_low > 0 ? `$${s.context_low.toFixed(2)}` : "---";
+      $("#ctx-vwap").textContent = s.context_vwap > 0 ? `$${s.context_vwap.toFixed(2)}` : "---";
+    } else {
+      banner.classList.remove("show");
+      btn.classList.remove("active", "loading");
+      btn.textContent = "PULL 30M";
+      card.classList.remove("show");
+    }
+
+    // Handle error messages
+    if (s.context_error) {
+      btn.classList.remove("loading");
+      btn.textContent = "PULL 30M";
+    }
+  }
+
   // ---- Render ----
 
   function render(s) {
     // Demo indicator
     if (s.demo !== undefined) updateDemoUI(s.demo);
+
+    // Context indicator
+    if (s.context_active !== undefined) updateContextUI(s);
 
     // Price
     $("#price").textContent = s.price > 0 ? `$${s.price.toFixed(2)}` : "---";
@@ -178,6 +216,12 @@
     drawLevel(state.support_floor, "rgba(74,222,128,0.5)", [4, 4]);
     drawLevel(state.resistance_ceiling, "rgba(248,113,113,0.5)", [4, 4]);
     drawLevel(state.vwap, "rgba(96,165,250,0.5)", [2, 3]);
+
+    // Context range lines (cyan, long dash)
+    if (state.context_active) {
+      drawLevel(state.context_high, "rgba(34,211,238,0.6)", [8, 4]);
+      drawLevel(state.context_low, "rgba(34,211,238,0.6)", [8, 4]);
+    }
 
     // High/low range labels (skip if overlapping)
     if (!usedLabelYs.some(ly => Math.abs(ly - 6) < 12)) {
@@ -313,6 +357,12 @@
     $("#window-fill").style.width = "0%";
     $("#tick-count").textContent = "0";
 
+    // Clear context display
+    $("#context-banner").classList.remove("show");
+    $("#context-card").classList.remove("show");
+    $("#ctx-btn").classList.remove("active", "loading");
+    $("#ctx-btn").textContent = "PULL 30M";
+
     // Clear canvas
     const canvas = $("#chart");
     if (canvas) {
@@ -332,6 +382,15 @@
     $("#demo-btn").addEventListener("click", () => {
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ cmd: "toggle_demo" }));
+      }
+    });
+
+    $("#ctx-btn").addEventListener("click", () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        const btn = $("#ctx-btn");
+        btn.classList.add("loading");
+        btn.textContent = "LOADING...";
+        ws.send(JSON.stringify({ cmd: "pull_context" }));
       }
     });
 

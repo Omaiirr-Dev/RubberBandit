@@ -7,8 +7,10 @@ import os
 import json
 import asyncio
 import time
+from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -33,8 +35,8 @@ engine.position_size = POSITION_SIZE
 clients: set[WebSocket] = set()
 alpaca_task = None
 
-# Per-client demo state
-demo_tasks: dict[WebSocket, asyncio.Task] = {}
+# Per-client demo state: {ws: {"task": Task, "engine": TradingEngine}}
+demo_clients: dict[WebSocket, dict] = {}
 
 
 async def broadcast(data: dict):
@@ -42,7 +44,7 @@ async def broadcast(data: dict):
     dead = set()
     message = json.dumps(data)
     for ws in clients:
-        if ws in demo_tasks:
+        if ws in demo_clients:
             continue  # skip clients in demo mode
         try:
             await ws.send_text(message)
@@ -105,18 +107,14 @@ async def lifespan(app: FastAPI):
     yield
     if alpaca_task:
         alpaca_task.cancel()
-    for task in demo_tasks.values():
-        task.cancel()
+    for entry in demo_clients.values():
+        entry["task"].cancel()
 
 
-async def demo_feed(ws: WebSocket):
+async def demo_feed(ws: WebSocket, demo_engine: TradingEngine):
     """Generate fake ticks for a single client."""
     import random
-    from backend.engine import TradingEngine
 
-    demo_engine = TradingEngine()
-    demo_engine.spread = SPREAD
-    demo_engine.position_size = POSITION_SIZE
     base_price = 135.00
     price = base_price
     while True:
@@ -135,16 +133,59 @@ async def demo_feed(ws: WebSocket):
 
 
 async def start_demo(ws: WebSocket):
-    if ws in demo_tasks:
+    if ws in demo_clients:
         return
-    task = asyncio.create_task(demo_feed(ws))
-    demo_tasks[ws] = task
+    demo_engine = TradingEngine()
+    demo_engine.spread = SPREAD
+    demo_engine.position_size = POSITION_SIZE
+    task = asyncio.create_task(demo_feed(ws, demo_engine))
+    demo_clients[ws] = {"task": task, "engine": demo_engine}
 
 
 async def stop_demo(ws: WebSocket):
-    task = demo_tasks.pop(ws, None)
-    if task:
-        task.cancel()
+    entry = demo_clients.pop(ws, None)
+    if entry:
+        entry["task"].cancel()
+
+
+async def fetch_historical(ticker: str, minutes: int = 30) -> list:
+    """Fetch historical 1-min bars from Alpaca REST API."""
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(minutes=minutes)
+    url = f"https://data.alpaca.markets/v2/stocks/{ticker}/bars"
+    params = {
+        "timeframe": "1Min",
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "limit": str(minutes),
+        "feed": "iex",
+    }
+    headers = {
+        "APCA-API-KEY-ID": ALPACA_API_KEY,
+        "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(url, params=params, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+    bars = []
+    for bar in data.get("bars", []):
+        bars.append((float(bar["c"]), float(bar["v"])))  # (close, volume)
+    return bars
+
+
+def generate_demo_context() -> list:
+    """Generate 30 fake 1-min bars for demo context."""
+    import random
+    bars = []
+    price = 135.00
+    for _ in range(30):
+        delta = random.uniform(-0.20, 0.20)
+        price += delta + (135.00 - price) * 0.01
+        price = round(price, 2)
+        vol = random.randint(50, 2000)
+        bars.append((price, vol))
+    return bars
 
 
 app = FastAPI(title="RubberBand", lifespan=lifespan)
@@ -157,7 +198,7 @@ async def websocket_endpoint(ws: WebSocket):
     # Send current state immediately
     try:
         state = engine.get_state()
-        state["demo"] = ws in demo_tasks
+        state["demo"] = ws in demo_clients
         await ws.send_text(json.dumps(state))
     except Exception:
         pass
@@ -167,14 +208,34 @@ async def websocket_endpoint(ws: WebSocket):
             data = json.loads(msg)
             cmd = data.get("cmd")
             if cmd == "toggle_demo":
-                if ws in demo_tasks:
+                if ws in demo_clients:
                     await stop_demo(ws)
-                    # Send current live state so UI updates
                     state = engine.get_state()
                     state["demo"] = False
                     await ws.send_text(json.dumps(state))
                 else:
                     await start_demo(ws)
+            elif cmd == "pull_context":
+                # Fetch 30-min historical bars and load into engine
+                try:
+                    if ws in demo_clients:
+                        bars = generate_demo_context()
+                        demo_clients[ws]["engine"].load_context(bars)
+                        state = demo_clients[ws]["engine"].get_state()
+                        state["demo"] = True
+                    else:
+                        bars = await fetch_historical(TICKER)
+                        engine.load_context(bars)
+                        state = engine.get_state()
+                        state["demo"] = False
+                    state["context_loaded"] = True
+                    await ws.send_text(json.dumps(state))
+                    # Also broadcast to other live clients
+                    if ws not in demo_clients:
+                        await broadcast(state)
+                except Exception as e:
+                    print(f"[Context] Fetch error: {e}")
+                    await ws.send_text(json.dumps({"context_error": str(e)}))
             elif cmd == "set_ticker":
                 pass
     except WebSocketDisconnect:

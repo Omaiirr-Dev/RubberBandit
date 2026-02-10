@@ -31,6 +31,12 @@ class TradingEngine:
         self.position_size = 10000.0
         self.spread = 0.02
         self.target_profit_pct = 0.5  # 0.5% default target
+        # 30-min context (loaded from historical bars)
+        self.context_active = False
+        self.context_high = 0.0
+        self.context_low = 0.0
+        self.context_vwap = 0.0
+        self.context_ticks = 0
 
     def _prune_window(self, now: float):
         cutoff = now - self.window_seconds
@@ -83,15 +89,23 @@ class TradingEngine:
         floor = self.support_floor
         ceiling = self.resistance_ceiling
         vwap = self.vwap
-        price_range = ceiling - floor
+
+        # Use 30-min context range for position_in_range when available
+        if self.context_active and self.context_high > self.context_low:
+            range_low = self.context_low
+            range_high = self.context_high
+        else:
+            range_low = floor
+            range_high = ceiling
+        price_range = range_high - range_low
 
         if price_range <= 0:
             self.signal_score = 50
             self.action = "WAIT"
             return
 
-        # Position in range: 0 = at floor, 1 = at ceiling
-        position_in_range = max(0.0, min(1.0, (price - floor) / price_range))
+        # Position in range: 0 = at low, 1 = at high
+        position_in_range = max(0.0, min(1.0, (price - range_low) / price_range))
 
         # --- BUY signal scoring ---
         # High score when price is near floor AND below VWAP
@@ -188,7 +202,35 @@ class TradingEngine:
             "spread": self.spread,
             "tick_count": tick_count,
             "window_fill": window_fill,
+            "context_active": self.context_active,
+            "context_high": round(self.context_high, 4),
+            "context_low": round(self.context_low, 4),
+            "context_vwap": round(self.context_vwap, 4),
+            "context_ticks": self.context_ticks,
         }
+
+    def load_context(self, bars: list):
+        """Load 30-min context from historical bars: [(price, volume), ...]"""
+        if not bars:
+            return
+        prices = [b[0] for b in bars]
+        self.context_high = max(prices)
+        self.context_low = min(prices)
+        # VWAP from bars
+        total_pv = sum(p * v for p, v in bars)
+        total_vol = sum(v for _, v in bars)
+        self.context_vwap = total_pv / total_vol if total_vol > 0 else 0.0
+        self.context_ticks = len(bars)
+        self.context_active = True
+        # Recalculate signal with new context
+        self._calculate_signal()
+
+    def clear_context(self):
+        self.context_active = False
+        self.context_high = 0.0
+        self.context_low = 0.0
+        self.context_vwap = 0.0
+        self.context_ticks = 0
 
     def reset(self):
         self.ticks.clear()
@@ -201,3 +243,4 @@ class TradingEngine:
         self.mode_price = 0.0
         self.signal_score = 0
         self.action = "WAIT"
+        self.clear_context()
