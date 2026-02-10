@@ -286,9 +286,12 @@
   // Uses Date.now() timestamps so the countdown stays accurate even if
   // the phone goes to the homescreen and iOS throttles setInterval.
 
+  let timerUnit = "M"; // M = minutes, S = seconds
+
   function startTimer() {
-    const mins = parseInt($("#input-mins").value);
-    if (!mins || mins < 1) return;
+    const val = parseInt($("#input-mins").value);
+    if (!val || val < 1) return;
+    const ms = timerUnit === "S" ? val * 1000 : val * 60 * 1000;
 
     // Reset engine for fresh evaluation (keeps context)
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -303,7 +306,7 @@
     }
 
     timerDone = false;
-    timerEndAt = Date.now() + mins * 60 * 1000;
+    timerEndAt = Date.now() + ms;
     $("#input-mins").disabled = true;
     $("#btn-start").textContent = "...";
     $("#btn-start").disabled = true;
@@ -390,6 +393,12 @@
 
     $("#btn-start").addEventListener("click", startTimer);
     $("#btn-reset").addEventListener("click", resetTimer);
+
+    // Timer unit toggle (M ↔ S)
+    $("#timer-unit").addEventListener("click", () => {
+      timerUnit = timerUnit === "M" ? "S" : "M";
+      $("#timer-unit").textContent = timerUnit;
+    });
 
     $("#demo-btn").addEventListener("click", () => {
       if (ws && ws.readyState === WebSocket.OPEN) {
