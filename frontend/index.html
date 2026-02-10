@@ -71,6 +71,45 @@
     }
     .dot.connected { background: var(--green); box-shadow: 0 0 6px var(--green); }
 
+    /* Demo mode */
+    .demo-banner {
+      display: none;
+      background: rgba(251,191,36,0.12);
+      border: 1px solid var(--yellow);
+      border-radius: 6px;
+      padding: 3px 8px;
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 9px;
+      font-weight: 700;
+      color: var(--yellow);
+      text-align: center;
+      letter-spacing: 1.5px;
+      animation: demo-pulse 2s infinite;
+    }
+    .demo-banner.show { display: block; }
+    @keyframes demo-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    .demo-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 9px;
+      font-weight: 600;
+      padding: 4px 8px;
+      border-radius: 5px;
+      cursor: pointer;
+      letter-spacing: 0.5px;
+      white-space: nowrap;
+    }
+    .demo-btn.active {
+      border-color: var(--yellow);
+      color: var(--yellow);
+      background: rgba(251,191,36,0.1);
+    }
+
     /* Price + Action side by side */
     .top-row {
       display: flex;
@@ -368,7 +407,8 @@
     <!-- Header -->
     <div class="header">
       <div class="logo">RubberBand</div>
-      <div style="display:flex;align-items:center;gap:8px;">
+      <div style="display:flex;align-items:center;gap:6px;">
+        <button id="demo-btn" class="demo-btn">DEMO</button>
         <button id="help-btn" class="help-btn" onclick="document.getElementById('cheat-sheet').classList.toggle('show');this.classList.toggle('active')">?</button>
         <div class="status">
           <div id="connection-dot" class="dot"></div>
@@ -376,6 +416,9 @@
         </div>
       </div>
     </div>
+
+    <!-- Demo Banner -->
+    <div id="demo-banner" class="demo-banner">DEMO MODE — FAKE PRICES</div>
 
     <!-- Cheat Sheet -->
     <div id="cheat-sheet" class="cheat-sheet">

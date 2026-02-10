@@ -32,6 +32,8 @@ engine.position_size = POSITION_SIZE
 # Connected frontend clients
 clients: set[WebSocket] = set()
 alpaca_task = None
+demo_task = None
+demo_active = False
 
 
 async def broadcast(data: dict):
@@ -80,7 +82,9 @@ async def connect_alpaca():
                             price = float(item["p"])
                             volume = float(item.get("s", 1))
                             engine.add_tick(price, volume)
-                            await broadcast(engine.get_state())
+                            state = engine.get_state()
+                            state["demo"] = False
+                            await broadcast(state)
         except Exception as e:
             print(f"[Alpaca] Connection error: {e}. Reconnecting in 5s...")
             await asyncio.sleep(5)
@@ -113,8 +117,32 @@ async def demo_feed():
         price = round(price, 2)
         vol = random.randint(10, 500)
         engine.add_tick(price, vol)
-        await broadcast(engine.get_state())
+        state = engine.get_state()
+        state["demo"] = True
+        await broadcast(state)
         await asyncio.sleep(1)
+
+
+async def start_demo():
+    global demo_task, demo_active
+    if demo_active:
+        return
+    demo_active = True
+    demo_task = asyncio.create_task(demo_feed())
+
+
+async def stop_demo():
+    global demo_task, demo_active
+    if not demo_active:
+        return
+    demo_active = False
+    if demo_task:
+        demo_task.cancel()
+        demo_task = None
+    # Reset engine so old fake data doesn't linger
+    engine.ticks.clear()
+    engine.total_volume = 0
+    engine.total_pv = 0
 
 
 app = FastAPI(title="RubberBand", lifespan=lifespan)
@@ -126,7 +154,9 @@ async def websocket_endpoint(ws: WebSocket):
     clients.add(ws)
     # Send current state immediately
     try:
-        await ws.send_text(json.dumps(engine.get_state()))
+        state = engine.get_state()
+        state["demo"] = demo_active
+        await ws.send_text(json.dumps(state))
     except Exception:
         pass
     try:
@@ -134,20 +164,15 @@ async def websocket_endpoint(ws: WebSocket):
             msg = await ws.receive_text()
             data = json.loads(msg)
             cmd = data.get("cmd")
-            if cmd == "set_entry":
-                engine.set_entry(float(data["price"]))
-                await ws.send_text(json.dumps(engine.get_state()))
-            elif cmd == "clear_entry":
-                engine.clear_entry()
-                await ws.send_text(json.dumps(engine.get_state()))
-            elif cmd == "set_spread":
-                engine.spread = float(data["spread"])
-                await ws.send_text(json.dumps(engine.get_state()))
-            elif cmd == "set_position":
-                engine.position_size = float(data["size"])
-                await ws.send_text(json.dumps(engine.get_state()))
+            if cmd == "toggle_demo":
+                if demo_active:
+                    await stop_demo()
+                else:
+                    await start_demo()
+                state = engine.get_state()
+                state["demo"] = demo_active
+                await broadcast(state)
             elif cmd == "set_ticker":
-                # Would need to resubscribe on Alpaca — for now just acknowledge
                 pass
     except WebSocketDisconnect:
         clients.discard(ws)

@@ -41,9 +41,28 @@
     };
   }
 
+  // ---- Demo mode ----
+
+  function updateDemoUI(isDemo) {
+    const banner = $("#demo-banner");
+    const btn = $("#demo-btn");
+    if (isDemo) {
+      banner.classList.add("show");
+      btn.classList.add("active");
+      btn.textContent = "DEMO ON";
+    } else {
+      banner.classList.remove("show");
+      btn.classList.remove("active");
+      btn.textContent = "DEMO";
+    }
+  }
+
   // ---- Render ----
 
   function render(s) {
+    // Demo indicator
+    if (s.demo !== undefined) updateDemoUI(s.demo);
+
     // Price
     $("#price").textContent = `$${s.price.toFixed(2)}`;
 
@@ -298,6 +317,12 @@
 
     $("#btn-start").addEventListener("click", startTimer);
     $("#btn-reset").addEventListener("click", resetTimer);
+
+    $("#demo-btn").addEventListener("click", () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ cmd: "toggle_demo" }));
+      }
+    });
 
     // Also catch visibility change to immediately re-check timer
     document.addEventListener("visibilitychange", () => {
