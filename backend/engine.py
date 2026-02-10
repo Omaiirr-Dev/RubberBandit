@@ -190,8 +190,14 @@ class TradingEngine:
             "window_fill": window_fill,
         }
 
-    def reset_daily(self):
+    def reset(self):
+        self.ticks.clear()
         self.vwap_cumulative_pv = 0.0
         self.vwap_cumulative_vol = 0.0
         self.vwap = 0.0
-        self.ticks.clear()
+        self.last_price = 0.0
+        self.support_floor = 0.0
+        self.resistance_ceiling = 0.0
+        self.mode_price = 0.0
+        self.signal_score = 0
+        self.action = "WAIT"

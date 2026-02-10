@@ -139,10 +139,7 @@ async def stop_demo():
     if demo_task:
         demo_task.cancel()
         demo_task = None
-    # Reset engine so old fake data doesn't linger
-    engine.ticks.clear()
-    engine.total_volume = 0
-    engine.total_pv = 0
+    engine.reset()
 
 
 app = FastAPI(title="RubberBand", lifespan=lifespan)
