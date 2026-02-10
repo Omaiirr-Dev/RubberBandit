@@ -126,7 +126,11 @@
     const range = max - min || 1;
     const toY = (p) => h - ((p - min) / range) * h;
 
-    // Helper: draw level line + label
+    // Current price Y for collision avoidance
+    const curY = state.price > 0 ? toY(state.price) : -100;
+    const usedLabelYs = [curY]; // reserve space for current price
+
+    // Helper: draw level line + label (skip label if too close to another)
     function drawLevel(price, color, dash) {
       if (price <= 0) return;
       const y = toY(price);
@@ -139,22 +143,34 @@
       ctx.lineTo(w, y);
       ctx.stroke();
       ctx.setLineDash([]);
-      ctx.font = "8px 'JetBrains Mono', monospace";
-      ctx.fillStyle = color;
-      ctx.textAlign = "left";
-      ctx.fillText(price.toFixed(2), w + 3, y + 3);
+      // Only draw label if not overlapping another
+      const tooClose = usedLabelYs.some(ly => Math.abs(ly - y) < 12);
+      if (!tooClose) {
+        ctx.font = "8px 'JetBrains Mono', monospace";
+        ctx.fillStyle = color;
+        ctx.textAlign = "left";
+        ctx.fillText(price.toFixed(2), w + 3, y + 3);
+        usedLabelYs.push(y);
+      }
     }
 
     drawLevel(state.support_floor, "rgba(74,222,128,0.5)", [4, 4]);
     drawLevel(state.resistance_ceiling, "rgba(248,113,113,0.5)", [4, 4]);
     drawLevel(state.vwap, "rgba(96,165,250,0.5)", [2, 3]);
 
-    // High/low range labels
-    ctx.font = "7px 'JetBrains Mono', monospace";
-    ctx.fillStyle = "#444";
-    ctx.textAlign = "left";
-    ctx.fillText(max.toFixed(2), w + 3, 8);
-    ctx.fillText(min.toFixed(2), w + 3, h - 2);
+    // High/low range labels (skip if overlapping)
+    if (!usedLabelYs.some(ly => Math.abs(ly - 6) < 12)) {
+      ctx.font = "7px 'JetBrains Mono', monospace";
+      ctx.fillStyle = "#444";
+      ctx.textAlign = "left";
+      ctx.fillText(max.toFixed(2), w + 3, 8);
+    }
+    if (!usedLabelYs.some(ly => Math.abs(ly - (h - 4)) < 12)) {
+      ctx.font = "7px 'JetBrains Mono', monospace";
+      ctx.fillStyle = "#444";
+      ctx.textAlign = "left";
+      ctx.fillText(min.toFixed(2), w + 3, h - 2);
+    }
 
     // Price line
     ctx.beginPath();
