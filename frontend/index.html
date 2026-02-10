@@ -315,6 +315,46 @@
     .btn-green { background: var(--green-dim); border-color: var(--green); color: var(--green); }
     .btn-red { background: var(--red-dim); border-color: var(--red); color: var(--red); }
 
+    /* Cheat sheet */
+    .help-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 13px;
+      font-weight: 700;
+      width: 24px; height: 24px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      padding: 0;
+      line-height: 1;
+    }
+    .help-btn.active { border-color: var(--green); color: var(--green); }
+    .cheat-sheet {
+      display: none;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 9px;
+      line-height: 1.6;
+    }
+    .cheat-sheet.show { display: block; }
+    .cheat-sheet .cs-row {
+      display: flex;
+      gap: 6px;
+      align-items: baseline;
+    }
+    .cheat-sheet .cs-term {
+      font-weight: 700;
+      min-width: 52px;
+      letter-spacing: 0.5px;
+    }
+    .cheat-sheet .cs-desc { color: var(--text-mid); }
+
     /* Desktop */
     @media (min-width: 600px) {
       .container { max-width: 480px; padding: 16px 20px; gap: 8px; }
@@ -328,10 +368,25 @@
     <!-- Header -->
     <div class="header">
       <div class="logo">RubberBand</div>
-      <div class="status">
-        <div id="connection-dot" class="dot"></div>
-        <span id="connection-text">OFFLINE</span>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <button id="help-btn" class="help-btn" onclick="document.getElementById('cheat-sheet').classList.toggle('show');this.classList.toggle('active')">?</button>
+        <div class="status">
+          <div id="connection-dot" class="dot"></div>
+          <span id="connection-text">OFFLINE</span>
+        </div>
       </div>
+    </div>
+
+    <!-- Cheat Sheet -->
+    <div id="cheat-sheet" class="cheat-sheet">
+      <div class="cs-row"><span class="cs-term" style="color:var(--green)">SUPPORT</span><span class="cs-desc">Price floor — avg of 5 lowest prices. Good area to buy.</span></div>
+      <div class="cs-row"><span class="cs-term" style="color:var(--red)">RESIST</span><span class="cs-desc">Price ceiling — avg of 5 highest prices. Good area to sell.</span></div>
+      <div class="cs-row"><span class="cs-term" style="color:var(--yellow)">MODE</span><span class="cs-desc">Most common price in the window. Where price keeps returning.</span></div>
+      <div class="cs-row"><span class="cs-term" style="color:var(--blue)">VWAP</span><span class="cs-desc">Volume-Weighted Avg Price. Fair value based on volume.</span></div>
+      <div class="cs-row"><span class="cs-term" style="color:var(--green)">BUY</span><span class="cs-desc">Price near support & below VWAP — potential bounce up.</span></div>
+      <div class="cs-row"><span class="cs-term" style="color:var(--red)">SELL</span><span class="cs-desc">Price near resistance & above VWAP — may drop soon.</span></div>
+      <div class="cs-row"><span class="cs-term" style="color:var(--text-dim)">WAIT</span><span class="cs-desc">No strong signal — price is in the middle. Stay patient.</span></div>
+      <div class="cs-row"><span class="cs-term" style="color:var(--text-mid)">STRENGTH</span><span class="cs-desc">0-100% confidence in the signal. Higher = stronger.</span></div>
     </div>
 
     <!-- Price + Action -->
