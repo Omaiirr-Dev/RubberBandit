@@ -34,8 +34,10 @@
 
     ws.onmessage = (e) => {
       state = JSON.parse(e.data);
-      priceHistory.push(state.price);
-      if (priceHistory.length > MAX_CHART_POINTS) priceHistory.shift();
+      if (state.price > 0) {
+        priceHistory.push(state.price);
+        if (priceHistory.length > MAX_CHART_POINTS) priceHistory.shift();
+      }
       render(state);
     };
   }
