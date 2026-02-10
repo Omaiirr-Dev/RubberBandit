@@ -42,6 +42,8 @@
 
   // ---- Demo mode ----
 
+  let wasDemo = false;
+
   function updateDemoUI(isDemo) {
     const banner = $("#demo-banner");
     const btn = $("#demo-btn");
@@ -53,7 +55,17 @@
       banner.classList.remove("show");
       btn.classList.remove("active");
       btn.textContent = "DEMO";
+      // Clear stale demo data when switching off
+      if (wasDemo) {
+        priceHistory = [];
+        const canvas = $("#chart");
+        if (canvas) {
+          const ctx = canvas.getContext("2d");
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+      }
     }
+    wasDemo = isDemo;
   }
 
   // ---- Render ----
@@ -63,7 +75,7 @@
     if (s.demo !== undefined) updateDemoUI(s.demo);
 
     // Price
-    $("#price").textContent = `$${s.price.toFixed(2)}`;
+    $("#price").textContent = s.price > 0 ? `$${s.price.toFixed(2)}` : "---";
 
     // Levels
     $("#support").textContent = s.support_floor > 0 ? `$${s.support_floor.toFixed(2)}` : "---";
