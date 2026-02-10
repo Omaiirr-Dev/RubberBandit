@@ -172,25 +172,36 @@
       ctx.fillText(min.toFixed(2), w + 3, h - 2);
     }
 
-    // Price line
-    ctx.beginPath();
-    ctx.strokeStyle = "#ffffff";
+    // Price line — green segments when going up, red when going down
     ctx.lineWidth = 1.5;
+    for (let i = 1; i < prices.length; i++) {
+      const x0 = ((i - 1) / (prices.length - 1)) * w;
+      const y0 = toY(prices[i - 1]);
+      const x1 = (i / (prices.length - 1)) * w;
+      const y1 = toY(prices[i]);
+      ctx.beginPath();
+      ctx.strokeStyle = prices[i] >= prices[i - 1]
+        ? "rgba(74,222,128,0.9)"
+        : "rgba(248,113,113,0.9)";
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.stroke();
+    }
+
+    // Green glow fill
+    ctx.beginPath();
     for (let i = 0; i < prices.length; i++) {
       const x = (i / (prices.length - 1)) * w;
       const y = toY(prices[i]);
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     }
-    ctx.stroke();
-
-    // Glow fill
     ctx.lineTo(w, h);
     ctx.lineTo(0, h);
     ctx.closePath();
     const grad = ctx.createLinearGradient(0, 0, 0, h);
-    grad.addColorStop(0, "rgba(255,255,255,0.08)");
-    grad.addColorStop(1, "rgba(255,255,255,0)");
+    grad.addColorStop(0, "rgba(74,222,128,0.1)");
+    grad.addColorStop(1, "rgba(74,222,128,0)");
     ctx.fillStyle = grad;
     ctx.fill();
 
