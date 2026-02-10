@@ -113,52 +113,48 @@
     canvas.width = rect.width * dpr;
     canvas.height = rect.height * dpr;
     ctx.scale(dpr, dpr);
-    const w = rect.width;
+    const totalW = rect.width;
     const h = rect.height;
+    const rm = 38; // right margin for labels
+    const w = totalW - rm;
 
-    ctx.clearRect(0, 0, w, h);
+    ctx.clearRect(0, 0, totalW, h);
 
     const prices = priceHistory;
     const min = Math.min(...prices) - 0.05;
     const max = Math.max(...prices) + 0.05;
     const range = max - min || 1;
+    const toY = (p) => h - ((p - min) / range) * h;
 
-    // Support line
-    if (state.support_floor > 0) {
-      const sy = h - ((state.support_floor - min) / range) * h;
-      ctx.strokeStyle = "rgba(74, 222, 128, 0.3)";
+    // Helper: draw level line + label
+    function drawLevel(price, color, dash) {
+      if (price <= 0) return;
+      const y = toY(price);
+      if (y < 0 || y > h) return;
+      ctx.strokeStyle = color;
       ctx.lineWidth = 1;
-      ctx.setLineDash([4, 4]);
+      ctx.setLineDash(dash);
       ctx.beginPath();
-      ctx.moveTo(0, sy);
-      ctx.lineTo(w, sy);
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
       ctx.stroke();
       ctx.setLineDash([]);
+      ctx.font = "8px 'JetBrains Mono', monospace";
+      ctx.fillStyle = color;
+      ctx.textAlign = "left";
+      ctx.fillText(price.toFixed(2), w + 3, y + 3);
     }
-    // Resistance line
-    if (state.resistance_ceiling > 0) {
-      const ry = h - ((state.resistance_ceiling - min) / range) * h;
-      ctx.strokeStyle = "rgba(248, 113, 113, 0.3)";
-      ctx.lineWidth = 1;
-      ctx.setLineDash([4, 4]);
-      ctx.beginPath();
-      ctx.moveTo(0, ry);
-      ctx.lineTo(w, ry);
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }
-    // VWAP line
-    if (state.vwap > 0) {
-      const vy = h - ((state.vwap - min) / range) * h;
-      ctx.strokeStyle = "rgba(96, 165, 250, 0.3)";
-      ctx.lineWidth = 1;
-      ctx.setLineDash([2, 2]);
-      ctx.beginPath();
-      ctx.moveTo(0, vy);
-      ctx.lineTo(w, vy);
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }
+
+    drawLevel(state.support_floor, "rgba(74,222,128,0.5)", [4, 4]);
+    drawLevel(state.resistance_ceiling, "rgba(248,113,113,0.5)", [4, 4]);
+    drawLevel(state.vwap, "rgba(96,165,250,0.5)", [2, 3]);
+
+    // High/low range labels
+    ctx.font = "7px 'JetBrains Mono', monospace";
+    ctx.fillStyle = "#444";
+    ctx.textAlign = "left";
+    ctx.fillText(max.toFixed(2), w + 3, 8);
+    ctx.fillText(min.toFixed(2), w + 3, h - 2);
 
     // Price line
     ctx.beginPath();
@@ -166,7 +162,7 @@
     ctx.lineWidth = 1.5;
     for (let i = 0; i < prices.length; i++) {
       const x = (i / (prices.length - 1)) * w;
-      const y = h - ((prices[i] - min) / range) * h;
+      const y = toY(prices[i]);
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     }
@@ -181,6 +177,17 @@
     grad.addColorStop(1, "rgba(255,255,255,0)");
     ctx.fillStyle = grad;
     ctx.fill();
+
+    // Current price tag
+    if (state.price > 0) {
+      const cy = toY(state.price);
+      ctx.fillStyle = "#f0f0f0";
+      ctx.fillRect(w + 1, cy - 5, rm - 2, 11);
+      ctx.font = "bold 7px 'JetBrains Mono', monospace";
+      ctx.fillStyle = "#0a0a0a";
+      ctx.textAlign = "left";
+      ctx.fillText(state.price.toFixed(2), w + 3, cy + 3);
+    }
   }
 
   // ---- Timer ----
