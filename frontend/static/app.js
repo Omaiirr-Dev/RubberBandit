@@ -122,6 +122,13 @@
     const ctx = canvas.getContext("2d");
     const dpr = window.devicePixelRatio || 1;
     const rect = canvas.getBoundingClientRect();
+
+    // Guard: skip draw if layout hasn't settled yet (0 dimensions), retry next frame
+    if (rect.width < 10 || rect.height < 10) {
+      requestAnimationFrame(drawChart);
+      return;
+    }
+
     canvas.width = rect.width * dpr;
     canvas.height = rect.height * dpr;
     ctx.scale(dpr, dpr);

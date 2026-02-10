@@ -36,11 +36,11 @@
     .container {
       max-width: 430px;
       margin: 0 auto;
-      padding: 12px 14px;
+      padding: 10px 12px;
       height: 100dvh;
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 8px;
     }
 
     /* Header */
@@ -51,7 +51,7 @@
     }
     .logo {
       font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-      font-size: 16px;
+      font-size: 18px;
       font-weight: 700;
       color: var(--green);
       letter-spacing: 1px;
@@ -131,13 +131,13 @@
       padding: 10px 8px;
     }
     #price {
-      font-size: 32px;
+      font-size: 38px;
       font-weight: 700;
       letter-spacing: -1px;
       line-height: 1;
     }
     .action-card {
-      width: 110px;
+      width: 120px;
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -148,20 +148,20 @@
     }
     .action-label {
       font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-      font-size: 9px;
+      font-size: 10px;
       letter-spacing: 1.5px;
       color: var(--text-dim);
       margin-bottom: 2px;
     }
     #action-text {
       font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-      font-size: 22px;
+      font-size: 26px;
       font-weight: 700;
       letter-spacing: 3px;
       line-height: 1;
     }
     #signal-pct {
-      font-size: 11px;
+      font-size: 13px;
       font-weight: 600;
       margin-top: 2px;
     }
@@ -193,13 +193,13 @@
     }
     .gauge-label {
       font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-      font-size: 9px;
+      font-size: 10px;
       letter-spacing: 1px;
       color: var(--text-dim);
       white-space: nowrap;
     }
     .gauge-track {
-      flex: 1; height: 5px;
+      flex: 1; height: 6px;
       background: var(--border);
       border-radius: 3px;
       overflow: hidden;
@@ -222,7 +222,7 @@
     }
     .card-title {
       font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-      font-size: 9px;
+      font-size: 10px;
       letter-spacing: 1.5px;
       color: var(--text-dim);
       text-transform: uppercase;
@@ -235,12 +235,12 @@
     }
     .level-item { display: flex; flex-direction: column; gap: 1px; }
     .level-label {
-      font-size: 8px;
+      font-size: 9px;
       letter-spacing: 0.5px;
       color: var(--text-dim);
       text-transform: uppercase;
     }
-    .level-value { font-size: 13px; font-weight: 600; }
+    .level-value { font-size: 15px; font-weight: 600; }
     .level-value.green { color: var(--green); }
     .level-value.red { color: var(--red); }
     .level-value.blue { color: var(--blue); }
@@ -249,8 +249,7 @@
     /* Chart */
     .chart-section {
       flex: 1;
-      min-height: 0;
-      max-height: 180px;
+      min-height: 120px;
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 8px;
@@ -281,7 +280,7 @@
       display: flex;
       align-items: center;
       gap: 6px;
-      font-size: 9px;
+      font-size: 10px;
       color: var(--text-dim);
     }
     .window-track {
@@ -302,17 +301,17 @@
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 8px;
-      padding: 8px 10px;
+      padding: 10px 12px;
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 10px;
     }
     .timer-section .card-title {
       margin: 0;
       white-space: nowrap;
     }
     #timer-display {
-      font-size: 20px;
+      font-size: 24px;
       font-weight: 700;
       letter-spacing: 1px;
       flex: 1;
@@ -323,14 +322,14 @@
     #timer-display.running { color: var(--text); }
     #timer-display.idle { color: var(--text-dim); }
     input[type="number"] {
-      width: 52px;
+      width: 56px;
       background: var(--bg);
       border: 1px solid var(--border);
-      border-radius: 5px;
+      border-radius: 6px;
       color: var(--text);
-      padding: 6px 6px;
+      padding: 10px 8px;
       font-family: inherit;
-      font-size: 13px;
+      font-size: 16px;
       text-align: center;
       outline: none;
     }
@@ -345,10 +344,10 @@
       border: 1px solid var(--border);
       color: var(--text-mid);
       font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-      font-size: 10px;
+      font-size: 12px;
       font-weight: 600;
-      padding: 6px 12px;
-      border-radius: 5px;
+      padding: 8px 14px;
+      border-radius: 6px;
       cursor: pointer;
       letter-spacing: 0.5px;
       white-space: nowrap;
@@ -549,6 +548,15 @@
       </div>
     </div>
 
+    <!-- Timer -->
+    <div class="timer-section">
+      <input type="number" id="input-mins" placeholder="5" min="1" max="60" inputmode="numeric" />
+      <span class="card-title" style="margin:0">MIN</span>
+      <div id="timer-display" class="idle">--:--</div>
+      <button id="btn-start" class="btn-green">Start</button>
+      <button id="btn-reset" class="btn-red">Reset</button>
+    </div>
+
     <!-- Chart -->
     <div class="chart-section">
       <div class="chart-head">
@@ -564,16 +572,7 @@
       </div>
     </div>
 
-    <!-- Timer -->
-    <div class="timer-section">
-      <input type="number" id="input-mins" placeholder="5" min="1" max="60" />
-      <span class="card-title" style="margin:0">MIN</span>
-      <div id="timer-display" class="idle">--:--</div>
-      <button id="btn-start" class="btn-green">Start</button>
-      <button id="btn-reset" class="btn-red">Reset</button>
-    </div>
-
   </div>
-  <script src="/static/app.js?v=12"></script>
+  <script src="/static/app.js?v=13"></script>
 </body>
 </html>
