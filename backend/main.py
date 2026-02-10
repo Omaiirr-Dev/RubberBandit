@@ -32,14 +32,18 @@ engine.position_size = POSITION_SIZE
 # Connected frontend clients
 clients: set[WebSocket] = set()
 alpaca_task = None
-demo_task = None
-demo_active = False
+
+# Per-client demo state
+demo_tasks: dict[WebSocket, asyncio.Task] = {}
 
 
 async def broadcast(data: dict):
+    """Send to all non-demo clients."""
     dead = set()
     message = json.dumps(data)
     for ws in clients:
+        if ws in demo_tasks:
+            continue  # skip clients in demo mode
         try:
             await ws.send_text(message)
         except Exception:
@@ -97,49 +101,50 @@ async def lifespan(app: FastAPI):
         alpaca_task = asyncio.create_task(connect_alpaca())
         print(f"[RubberBand] Streaming {TICKER} from Alpaca")
     else:
-        print("[RubberBand] No Alpaca API key set — running in demo mode")
-        alpaca_task = asyncio.create_task(demo_feed())
+        print("[RubberBand] No Alpaca API key set — use DEMO button")
     yield
     if alpaca_task:
         alpaca_task.cancel()
+    for task in demo_tasks.values():
+        task.cancel()
 
 
-async def demo_feed():
-    """Generate fake ticks for testing without API keys."""
+async def demo_feed(ws: WebSocket):
+    """Generate fake ticks for a single client."""
     import random
+    from backend.engine import TradingEngine
 
+    demo_engine = TradingEngine()
+    demo_engine.spread = SPREAD
+    demo_engine.position_size = POSITION_SIZE
     base_price = 135.00
     price = base_price
     while True:
         delta = random.uniform(-0.15, 0.15)
-        # Mean-revert slightly
         price += delta + (base_price - price) * 0.002
         price = round(price, 2)
         vol = random.randint(10, 500)
-        engine.add_tick(price, vol)
-        state = engine.get_state()
+        demo_engine.add_tick(price, vol)
+        state = demo_engine.get_state()
         state["demo"] = True
-        await broadcast(state)
+        try:
+            await ws.send_text(json.dumps(state))
+        except Exception:
+            break
         await asyncio.sleep(1)
 
 
-async def start_demo():
-    global demo_task, demo_active
-    if demo_active:
+async def start_demo(ws: WebSocket):
+    if ws in demo_tasks:
         return
-    demo_active = True
-    demo_task = asyncio.create_task(demo_feed())
+    task = asyncio.create_task(demo_feed(ws))
+    demo_tasks[ws] = task
 
 
-async def stop_demo():
-    global demo_task, demo_active
-    if not demo_active:
-        return
-    demo_active = False
-    if demo_task:
-        demo_task.cancel()
-        demo_task = None
-    engine.reset()
+async def stop_demo(ws: WebSocket):
+    task = demo_tasks.pop(ws, None)
+    if task:
+        task.cancel()
 
 
 app = FastAPI(title="RubberBand", lifespan=lifespan)
@@ -152,7 +157,7 @@ async def websocket_endpoint(ws: WebSocket):
     # Send current state immediately
     try:
         state = engine.get_state()
-        state["demo"] = demo_active
+        state["demo"] = ws in demo_tasks
         await ws.send_text(json.dumps(state))
     except Exception:
         pass
@@ -162,19 +167,23 @@ async def websocket_endpoint(ws: WebSocket):
             data = json.loads(msg)
             cmd = data.get("cmd")
             if cmd == "toggle_demo":
-                if demo_active:
-                    await stop_demo()
+                if ws in demo_tasks:
+                    await stop_demo(ws)
+                    # Send current live state so UI updates
+                    state = engine.get_state()
+                    state["demo"] = False
+                    await ws.send_text(json.dumps(state))
                 else:
-                    await start_demo()
-                state = engine.get_state()
-                state["demo"] = demo_active
-                await broadcast(state)
+                    await start_demo(ws)
             elif cmd == "set_ticker":
                 pass
     except WebSocketDisconnect:
-        clients.discard(ws)
+        pass
     except Exception:
+        pass
+    finally:
         clients.discard(ws)
+        await stop_demo(ws)
 
 
 # Serve frontend
