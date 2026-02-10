@@ -110,6 +110,10 @@
       background: rgba(251,191,36,0.1);
     }
 
+    /* Desktop row wrapper — single column on mobile */
+    .desktop-row { display: contents; }
+    .desktop-right { display: contents; }
+
     /* Price + Action side by side */
     .top-row {
       display: flex;
@@ -395,9 +399,68 @@
     .cheat-sheet .cs-desc { color: var(--text-mid); }
 
     /* Desktop */
-    @media (min-width: 600px) {
-      .container { max-width: 480px; padding: 16px 20px; gap: 8px; }
-      #price { font-size: 38px; }
+    @media (min-width: 768px) {
+      body { overflow: auto; }
+      .container {
+        max-width: 900px;
+        height: auto;
+        min-height: 100dvh;
+        padding: 24px 32px;
+        gap: 14px;
+      }
+      .header { margin-bottom: 4px; }
+      .logo { font-size: 22px; }
+      .demo-btn { font-size: 11px; padding: 5px 12px; }
+      .help-btn { width: 30px; height: 30px; font-size: 15px; }
+      .status { font-size: 12px; }
+      .demo-banner { font-size: 11px; padding: 5px 12px; }
+      .cheat-sheet { font-size: 11px; padding: 12px 16px; }
+
+      /* Two-column: price+action left, levels right */
+      .desktop-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+        align-items: stretch;
+      }
+      .top-row { flex-direction: column; gap: 10px; }
+      .price-card { padding: 20px 16px; }
+      #price { font-size: 52px; letter-spacing: -2px; }
+      .action-card { width: 100%; padding: 14px 10px; }
+      #action-text { font-size: 28px; }
+      #signal-pct { font-size: 14px; }
+      .action-label { font-size: 11px; }
+
+      /* Right column: levels + gauges */
+      .desktop-right {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .card { padding: 14px 16px; }
+      .card-title { font-size: 11px; margin-bottom: 8px; }
+      .level-label { font-size: 10px; }
+      .level-value { font-size: 18px; }
+      .gauge-label { font-size: 11px; }
+      .gauge-track { height: 7px; }
+      .window-row { font-size: 11px; }
+      .window-track { height: 4px; }
+
+      /* Chart: much taller */
+      .chart-section {
+        max-height: none;
+        min-height: 300px;
+        flex: none;
+        padding: 12px 14px;
+      }
+      .chart-head { margin-bottom: 6px; }
+      .legend { font-size: 10px; gap: 14px; }
+
+      /* Timer */
+      .timer-section { padding: 12px 16px; gap: 12px; }
+      #timer-display { font-size: 28px; }
+      input[type="number"] { width: 64px; font-size: 16px; padding: 8px; }
+      button { font-size: 12px; padding: 8px 18px; }
     }
   </style>
 </head>
@@ -432,52 +495,56 @@
       <div class="cs-row"><span class="cs-term" style="color:var(--text-mid)">STRENGTH</span><span class="cs-desc">0-100% confidence in the signal. Higher = stronger.</span></div>
     </div>
 
-    <!-- Price + Action -->
-    <div class="top-row">
-      <div class="price-card">
-        <div id="price">$0.00</div>
-      </div>
-      <div id="action-card" class="action-card wait">
-        <div class="action-label">SIGNAL</div>
-        <div id="action-text">WAIT</div>
-        <div id="signal-pct">0%</div>
-      </div>
-    </div>
-
-    <!-- Window bar -->
-    <div class="window-row">
-      <span>TIME WINDOW</span>
-      <div class="window-track"><div id="window-fill" style="width:0%"></div></div>
-      <span id="tick-count">0</span>
-    </div>
-
-    <!-- Gauge -->
-    <div class="gauge-row">
-      <span class="gauge-label">STRENGTH</span>
-      <div class="gauge-track">
-        <div id="gauge-fill" class="gauge-fill low" style="width:0%"></div>
-      </div>
-    </div>
-
-    <!-- 5-Min Levels -->
-    <div class="card">
-      <div class="card-title">5-Min Levels</div>
-      <div class="levels-grid">
-        <div class="level-item">
-          <span class="level-label">Support</span>
-          <span id="support" class="level-value green">---</span>
+    <!-- Desktop: two-column row -->
+    <div class="desktop-row">
+      <div>
+        <!-- Price + Action -->
+        <div class="top-row">
+          <div class="price-card">
+            <div id="price">$0.00</div>
+          </div>
+          <div id="action-card" class="action-card wait">
+            <div class="action-label">SIGNAL</div>
+            <div id="action-text">WAIT</div>
+            <div id="signal-pct">0%</div>
+          </div>
         </div>
-        <div class="level-item">
-          <span class="level-label">Resist</span>
-          <span id="resistance" class="level-value red">---</span>
+      </div>
+      <div class="desktop-right">
+        <!-- 5-Min Levels -->
+        <div class="card">
+          <div class="card-title">5-Min Levels</div>
+          <div class="levels-grid">
+            <div class="level-item">
+              <span class="level-label">Support</span>
+              <span id="support" class="level-value green">---</span>
+            </div>
+            <div class="level-item">
+              <span class="level-label">Resist</span>
+              <span id="resistance" class="level-value red">---</span>
+            </div>
+            <div class="level-item">
+              <span class="level-label">Mode</span>
+              <span id="mode" class="level-value yellow">---</span>
+            </div>
+            <div class="level-item">
+              <span class="level-label">VWAP</span>
+              <span id="vwap" class="level-value blue">---</span>
+            </div>
+          </div>
         </div>
-        <div class="level-item">
-          <span class="level-label">Mode</span>
-          <span id="mode" class="level-value yellow">---</span>
+        <!-- Window bar -->
+        <div class="window-row">
+          <span>TIME WINDOW</span>
+          <div class="window-track"><div id="window-fill" style="width:0%"></div></div>
+          <span id="tick-count">0</span>
         </div>
-        <div class="level-item">
-          <span class="level-label">VWAP</span>
-          <span id="vwap" class="level-value blue">---</span>
+        <!-- Gauge -->
+        <div class="gauge-row">
+          <span class="gauge-label">STRENGTH</span>
+          <div class="gauge-track">
+            <div id="gauge-fill" class="gauge-fill low" style="width:0%"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -507,6 +574,6 @@
     </div>
 
   </div>
-  <script src="/static/app.js?v=11"></script>
+  <script src="/static/app.js?v=12"></script>
 </body>
 </html>
