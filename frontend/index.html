@@ -112,7 +112,44 @@
       background: rgba(251,191,36,0.1);
     }
 
-    /* Context scan button */
+    /* Context controls */
+    .ctx-controls {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+    }
+    .ctx-input {
+      width: 30px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      padding: 3px 2px;
+      font-family: inherit;
+      font-size: 9px;
+      text-align: center;
+      outline: none;
+      -moz-appearance: textfield;
+    }
+    .ctx-input::-webkit-inner-spin-button,
+    .ctx-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+    .ctx-input:focus { border-color: var(--cyan); }
+    .ctx-unit {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 8px;
+      font-weight: 700;
+      padding: 3px 4px;
+      border-radius: 4px;
+      cursor: pointer;
+      letter-spacing: 0.5px;
+      white-space: nowrap;
+      min-width: 22px;
+      text-align: center;
+    }
+    .ctx-unit:active { transform: scale(0.96); }
     .ctx-btn {
       background: none;
       border: 1px solid var(--border);
@@ -120,7 +157,7 @@
       font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
       font-size: 9px;
       font-weight: 600;
-      padding: 4px 8px;
+      padding: 4px 6px;
       border-radius: 5px;
       cursor: pointer;
       letter-spacing: 0.5px;
@@ -469,6 +506,8 @@
       .status { font-size: 12px; }
       .demo-banner { font-size: 11px; padding: 5px 12px; }
       .ctx-btn { font-size: 11px; padding: 5px 12px; }
+      .ctx-input { width: 38px; font-size: 11px; padding: 4px; }
+      .ctx-unit { font-size: 10px; padding: 4px 6px; }
       .context-banner { font-size: 11px; padding: 5px 12px; }
       .context-card { padding: 14px 16px; }
       .cheat-sheet { font-size: 11px; padding: 12px 16px; }
@@ -528,7 +567,11 @@
     <div class="header">
       <div class="logo">RubberBand</div>
       <div style="display:flex;align-items:center;gap:6px;">
-        <button id="ctx-btn" class="ctx-btn">PULL 30M</button>
+        <div class="ctx-controls">
+          <input type="number" id="ctx-input" class="ctx-input" value="30" min="1" max="120" inputmode="numeric" />
+          <button id="ctx-unit" class="ctx-unit">M</button>
+          <button id="ctx-btn" class="ctx-btn">PULL</button>
+        </div>
         <button id="demo-btn" class="demo-btn">DEMO</button>
         <button id="help-btn" class="help-btn" onclick="document.getElementById('cheat-sheet').classList.toggle('show');this.classList.toggle('active')">?</button>
         <div class="status">
@@ -655,6 +698,6 @@
     </div>
 
   </div>
-  <script src="/static/app.js?v=17"></script>
+  <script src="/static/app.js?v=18"></script>
 </body>
 </html>

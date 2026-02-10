@@ -174,12 +174,12 @@ async def fetch_historical(ticker: str, minutes: int = 30) -> list:
     return bars
 
 
-def generate_demo_context() -> list:
-    """Generate 30 fake 1-min bars for demo context."""
+def generate_demo_context(count: int = 30) -> list:
+    """Generate fake 1-min bars for demo context."""
     import random
     bars = []
     price = 135.00
-    for _ in range(30):
+    for _ in range(max(1, count)):
         delta = random.uniform(-0.20, 0.20)
         price += delta + (135.00 - price) * 0.01
         price = round(price, 2)
@@ -216,26 +216,38 @@ async def websocket_endpoint(ws: WebSocket):
                 else:
                     await start_demo(ws)
             elif cmd == "pull_context":
-                # Fetch 30-min historical bars and load into engine
+                # Fetch historical bars and load into engine
+                minutes = max(0.5, min(120, float(data.get("minutes", 30))))
+                bar_count = max(1, int(minutes))
                 try:
                     if ws in demo_clients:
-                        bars = generate_demo_context()
+                        bars = generate_demo_context(bar_count)
                         demo_clients[ws]["engine"].load_context(bars)
                         state = demo_clients[ws]["engine"].get_state()
                         state["demo"] = True
                     else:
-                        bars = await fetch_historical(TICKER)
+                        bars = await fetch_historical(TICKER, int(minutes))
                         engine.load_context(bars)
                         state = engine.get_state()
                         state["demo"] = False
                     state["context_loaded"] = True
                     await ws.send_text(json.dumps(state))
-                    # Also broadcast to other live clients
                     if ws not in demo_clients:
                         await broadcast(state)
                 except Exception as e:
                     print(f"[Context] Fetch error: {e}")
                     await ws.send_text(json.dumps({"context_error": str(e)}))
+            elif cmd == "reset_window":
+                # Clear 5-min window for fresh evaluation (keep context)
+                if ws in demo_clients:
+                    demo_clients[ws]["engine"].reset_window()
+                    state = demo_clients[ws]["engine"].get_state()
+                    state["demo"] = True
+                else:
+                    engine.reset_window()
+                    state = engine.get_state()
+                    state["demo"] = False
+                await ws.send_text(json.dumps(state))
             elif cmd == "set_ticker":
                 pass
     except WebSocketDisconnect:

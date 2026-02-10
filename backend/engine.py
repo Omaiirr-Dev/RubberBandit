@@ -225,6 +225,19 @@ class TradingEngine:
         # Recalculate signal with new context
         self._calculate_signal()
 
+    def reset_window(self):
+        """Clear 5-min sliding window for fresh evaluation, keep context."""
+        self.ticks.clear()
+        self.vwap_cumulative_pv = 0.0
+        self.vwap_cumulative_vol = 0.0
+        self.vwap = 0.0
+        self.last_price = 0.0
+        self.support_floor = 0.0
+        self.resistance_ceiling = 0.0
+        self.mode_price = 0.0
+        self.signal_score = 0
+        self.action = "WAIT"
+
     def clear_context(self):
         self.context_active = False
         self.context_high = 0.0

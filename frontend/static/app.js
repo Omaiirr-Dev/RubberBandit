@@ -81,7 +81,7 @@
       banner.classList.add("show");
       btn.classList.remove("loading");
       btn.classList.add("active");
-      btn.textContent = "CTX ON";
+      btn.textContent = "PULL";
       card.classList.add("show");
       // Update range display
       const range = s.context_high > 0 && s.context_low > 0
@@ -94,14 +94,14 @@
     } else {
       banner.classList.remove("show");
       btn.classList.remove("active", "loading");
-      btn.textContent = "PULL 30M";
+      btn.textContent = "PULL";
       card.classList.remove("show");
     }
 
     // Handle error messages
     if (s.context_error) {
       btn.classList.remove("loading");
-      btn.textContent = "PULL 30M";
+      btn.textContent = "PULL";
     }
   }
 
@@ -290,6 +290,18 @@
     const mins = parseInt($("#input-mins").value);
     if (!mins || mins < 1) return;
 
+    // Reset engine for fresh evaluation (keeps context)
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ cmd: "reset_window" }));
+    }
+    // Clear frontend data
+    priceHistory = [];
+    const canvas = $("#chart");
+    if (canvas) {
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+
     timerDone = false;
     timerEndAt = Date.now() + mins * 60 * 1000;
     $("#input-mins").disabled = true;
@@ -361,7 +373,7 @@
     $("#context-banner").classList.remove("show");
     $("#context-card").classList.remove("show");
     $("#ctx-btn").classList.remove("active", "loading");
-    $("#ctx-btn").textContent = "PULL 30M";
+    $("#ctx-btn").textContent = "PULL";
 
     // Clear canvas
     const canvas = $("#chart");
@@ -385,12 +397,22 @@
       }
     });
 
+    // Context: unit toggle (M ↔ S)
+    let ctxUnit = "M"; // M = minutes, S = seconds
+    $("#ctx-unit").addEventListener("click", () => {
+      ctxUnit = ctxUnit === "M" ? "S" : "M";
+      $("#ctx-unit").textContent = ctxUnit;
+    });
+
+    // Context: pull button
     $("#ctx-btn").addEventListener("click", () => {
       if (ws && ws.readyState === WebSocket.OPEN) {
         const btn = $("#ctx-btn");
+        const val = parseInt($("#ctx-input").value) || 30;
+        const minutes = ctxUnit === "S" ? val / 60 : val;
         btn.classList.add("loading");
-        btn.textContent = "LOADING...";
-        ws.send(JSON.stringify({ cmd: "pull_context" }));
+        btn.textContent = "...";
+        ws.send(JSON.stringify({ cmd: "pull_context", minutes }));
       }
     });
 
