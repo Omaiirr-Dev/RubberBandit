@@ -7,7 +7,6 @@
   let state = {};
   let priceHistory = [];
   const MAX_CHART_POINTS = 120;
-  const CANDLE_GROUP = 3; // ticks per candle
 
   // Timer state — uses absolute timestamps so it works when backgrounded
   let timerEndAt = null; // Date.now() ms when timer finishes
@@ -105,20 +104,6 @@
 
   // ---- Chart ----
 
-  function buildCandles(prices) {
-    const candles = [];
-    for (let i = 0; i < prices.length; i += CANDLE_GROUP) {
-      const slice = prices.slice(i, i + CANDLE_GROUP);
-      candles.push({
-        open: slice[0],
-        close: slice[slice.length - 1],
-        high: Math.max(...slice),
-        low: Math.min(...slice),
-      });
-    }
-    return candles;
-  }
-
   function drawChart() {
     const canvas = $("#chart");
     if (!canvas || priceHistory.length < 2) return;
@@ -138,74 +123,64 @@
     const max = Math.max(...prices) + 0.05;
     const range = max - min || 1;
 
-    const toY = (p) => h - ((p - min) / range) * h;
-
     // Support line
     if (state.support_floor > 0) {
+      const sy = h - ((state.support_floor - min) / range) * h;
       ctx.strokeStyle = "rgba(74, 222, 128, 0.3)";
       ctx.lineWidth = 1;
       ctx.setLineDash([4, 4]);
       ctx.beginPath();
-      ctx.moveTo(0, toY(state.support_floor));
-      ctx.lineTo(w, toY(state.support_floor));
+      ctx.moveTo(0, sy);
+      ctx.lineTo(w, sy);
       ctx.stroke();
       ctx.setLineDash([]);
     }
     // Resistance line
     if (state.resistance_ceiling > 0) {
+      const ry = h - ((state.resistance_ceiling - min) / range) * h;
       ctx.strokeStyle = "rgba(248, 113, 113, 0.3)";
       ctx.lineWidth = 1;
       ctx.setLineDash([4, 4]);
       ctx.beginPath();
-      ctx.moveTo(0, toY(state.resistance_ceiling));
-      ctx.lineTo(w, toY(state.resistance_ceiling));
+      ctx.moveTo(0, ry);
+      ctx.lineTo(w, ry);
       ctx.stroke();
       ctx.setLineDash([]);
     }
     // VWAP line
     if (state.vwap > 0) {
+      const vy = h - ((state.vwap - min) / range) * h;
       ctx.strokeStyle = "rgba(96, 165, 250, 0.3)";
       ctx.lineWidth = 1;
       ctx.setLineDash([2, 2]);
       ctx.beginPath();
-      ctx.moveTo(0, toY(state.vwap));
-      ctx.lineTo(w, toY(state.vwap));
+      ctx.moveTo(0, vy);
+      ctx.lineTo(w, vy);
       ctx.stroke();
       ctx.setLineDash([]);
     }
 
-    // Mini candles
-    const candles = buildCandles(prices);
-    if (candles.length > 0) {
-      const gap = 1;
-      const candleW = Math.min(4, Math.max(1.5, (w - gap * candles.length) / candles.length));
-      const totalCandleW = candles.length * (candleW + gap);
-      const offsetX = w - totalCandleW; // right-align candles
-
-      for (let i = 0; i < candles.length; i++) {
-        const c = candles[i];
-        const x = offsetX + i * (candleW + gap);
-        const bullish = c.close >= c.open;
-        const color = bullish ? "rgba(74,222,128,0.8)" : "rgba(248,113,113,0.8)";
-        const wickColor = bullish ? "rgba(74,222,128,0.35)" : "rgba(248,113,113,0.35)";
-
-        // Thin wick
-        const wickX = x + candleW / 2;
-        ctx.strokeStyle = wickColor;
-        ctx.lineWidth = 0.5;
-        ctx.beginPath();
-        ctx.moveTo(wickX, toY(c.high));
-        ctx.lineTo(wickX, toY(c.low));
-        ctx.stroke();
-
-        // Tiny body
-        const bodyTop = toY(Math.max(c.open, c.close));
-        const bodyBot = toY(Math.min(c.open, c.close));
-        const bodyH = Math.max(1, bodyBot - bodyTop);
-        ctx.fillStyle = color;
-        ctx.fillRect(x, bodyTop, candleW, bodyH);
-      }
+    // Price line
+    ctx.beginPath();
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 1.5;
+    for (let i = 0; i < prices.length; i++) {
+      const x = (i / (prices.length - 1)) * w;
+      const y = h - ((prices[i] - min) / range) * h;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
     }
+    ctx.stroke();
+
+    // Glow fill
+    ctx.lineTo(w, h);
+    ctx.lineTo(0, h);
+    ctx.closePath();
+    const grad = ctx.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, "rgba(255,255,255,0.08)");
+    grad.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = grad;
+    ctx.fill();
   }
 
   // ---- Timer ----
