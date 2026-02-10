@@ -340,6 +340,13 @@
       }
     });
 
-    window.addEventListener("resize", drawChart);
+    // ResizeObserver redraws chart whenever its container changes size
+    // (handles first-load layout settling + window resize)
+    const chartWrap = $(".chart-wrap");
+    if (chartWrap && typeof ResizeObserver !== "undefined") {
+      new ResizeObserver(() => drawChart()).observe(chartWrap);
+    } else {
+      window.addEventListener("resize", drawChart);
+    }
   });
 })();
