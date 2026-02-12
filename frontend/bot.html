@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>RubberBand BOT</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0a0a0a;
+      --surface: #111111;
+      --border: #1a1a1a;
+      --text: #f0f0f0;
+      --text-mid: #b0b0b0;
+      --text-dim: #888888;
+      --green: #4ade80;
+      --green-dim: rgba(74,222,128,0.12);
+      --red: #f87171;
+      --red-dim: rgba(248,113,113,0.12);
+      --blue: #60a5fa;
+      --yellow: #fbbf24;
+      --cyan: #22d3ee;
+      --cyan-dim: rgba(34,211,238,0.12);
+    }
+
+    body {
+      font-family: 'JetBrains Mono', monospace;
+      background: var(--bg);
+      color: var(--text);
+      height: 100dvh;
+      overflow-y: auto;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .container {
+      max-width: 430px;
+      margin: 0 auto;
+      padding: 10px 12px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    /* Header */
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .logo {
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--green);
+      letter-spacing: 1px;
+    }
+    .header-controls {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .nav-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 9px;
+      font-weight: 600;
+      padding: 4px 8px;
+      border-radius: 5px;
+      cursor: pointer;
+      letter-spacing: 0.5px;
+      white-space: nowrap;
+      text-decoration: none;
+    }
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10px;
+      color: var(--text-dim);
+      letter-spacing: 1px;
+    }
+    .dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--red);
+    }
+    .dot.connected { background: var(--green); box-shadow: 0 0 6px var(--green); }
+
+    /* Tab bar */
+    .tab-bar {
+      display: flex;
+      gap: 2px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 3px;
+    }
+    .tab-btn {
+      flex: 1;
+      background: none;
+      border: 1px solid transparent;
+      color: var(--text-dim);
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 6px 0;
+      border-radius: 6px;
+      cursor: pointer;
+      letter-spacing: 1.5px;
+      text-align: center;
+      transition: all 0.15s;
+    }
+    .tab-btn.active {
+      background: var(--green-dim);
+      border-color: var(--green);
+      color: var(--green);
+    }
+    .tab-btn.active-demo {
+      background: rgba(251,191,36,0.1);
+      border-color: var(--yellow);
+      color: var(--yellow);
+    }
+
+    /* Status pill */
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .status-pill {
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      padding: 4px 10px;
+      border-radius: 20px;
+      white-space: nowrap;
+    }
+    .status-pill.warming { background: rgba(251,191,36,0.15); color: var(--yellow); border: 1px solid var(--yellow); }
+    .status-pill.watching { background: var(--cyan-dim); color: var(--cyan); border: 1px solid var(--cyan); }
+    .status-pill.entering { background: var(--green-dim); color: var(--green); border: 1px solid var(--green); animation: pill-pulse 1s infinite; }
+    .status-pill.in-position { background: var(--green-dim); color: var(--green); border: 1px solid var(--green); }
+    .status-pill.exiting { background: var(--red-dim); color: var(--red); border: 1px solid var(--red); animation: pill-pulse 1s infinite; }
+    .status-pill.cooling { background: rgba(136,136,136,0.15); color: var(--text-dim); border: 1px solid var(--text-dim); }
+    @keyframes pill-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    .warmup-track {
+      flex: 1;
+      height: 4px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .warmup-fill {
+      height: 100%;
+      background: var(--yellow);
+      border-radius: 2px;
+      transition: width 0.5s;
+    }
+    .warmup-pct {
+      font-size: 10px;
+      color: var(--yellow);
+      min-width: 30px;
+      text-align: right;
+    }
+
+    /* Cash card */
+    .cash-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      text-align: center;
+    }
+    .cash-label {
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 9px;
+      letter-spacing: 1.5px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+    .cash-amount {
+      font-size: 32px;
+      font-weight: 700;
+      letter-spacing: -1px;
+      line-height: 1;
+    }
+    .cash-pnl {
+      font-size: 13px;
+      font-weight: 600;
+      margin-top: 4px;
+    }
+    .cash-pnl.profit { color: var(--green); }
+    .cash-pnl.loss { color: var(--red); }
+    .cash-pnl.flat { color: var(--text-dim); }
+
+    /* Position card */
+    .position-card {
+      display: none;
+      background: var(--surface);
+      border: 1px solid var(--green);
+      border-radius: 8px;
+      padding: 10px 12px;
+    }
+    .position-card.show { display: block; }
+    .position-card.losing { border-color: var(--red); }
+    .pos-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 4px;
+    }
+    .pos-title {
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 9px;
+      letter-spacing: 1.5px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+    }
+    .pos-pnl {
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .pos-pnl.profit { color: var(--green); }
+    .pos-pnl.loss { color: var(--red); }
+    .pos-details {
+      font-size: 11px;
+      color: var(--text-mid);
+      display: flex;
+      gap: 12px;
+    }
+
+    /* Metrics card */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+    .card-title {
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 10px;
+      letter-spacing: 1.5px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      margin-bottom: 5px;
+    }
+    .levels-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr 1fr;
+      gap: 4px;
+    }
+    .level-item { display: flex; flex-direction: column; gap: 1px; }
+    .level-label {
+      font-size: 9px;
+      letter-spacing: 0.5px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+    }
+    .level-value { font-size: 15px; font-weight: 600; }
+    .level-value.green { color: var(--green); }
+    .level-value.red { color: var(--red); }
+    .level-value.blue { color: var(--blue); }
+    .level-value.yellow { color: var(--yellow); }
+
+    /* Signal badge */
+    .signal-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 6px;
+    }
+    .signal-badge {
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      padding: 3px 10px;
+      border-radius: 5px;
+    }
+    .signal-badge.buy { background: var(--green-dim); color: var(--green); }
+    .signal-badge.sell { background: var(--red-dim); color: var(--red); }
+    .signal-badge.wait { background: rgba(136,136,136,0.1); color: var(--text-dim); }
+    .signal-score {
+      font-size: 16px;
+      font-weight: 700;
+    }
+    .gauge-track {
+      flex: 1; height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .gauge-fill {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 0.3s ease;
+    }
+    .gauge-fill.low { background: var(--text-dim); }
+    .gauge-fill.mid { background: var(--yellow); }
+    .gauge-fill.high { background: var(--green); }
+
+    /* Chart */
+    .chart-section {
+      min-height: 180px;
+      max-height: 260px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 8px;
+      display: flex;
+      flex-direction: column;
+    }
+    .chart-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 3px;
+    }
+    .chart-wrap { flex: 1; min-height: 0; }
+    #chart { width: 100%; height: 100%; }
+    .legend {
+      display: flex;
+      gap: 10px;
+      font-size: 8px;
+      color: var(--text-dim);
+      margin-top: 3px;
+    }
+    .legend-item { display: flex; align-items: center; gap: 3px; }
+    .legend-dot { width: 8px; height: 2px; border-radius: 1px; }
+
+    /* Trade log */
+    .trade-log {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+    .trade-log-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+    .trade-count {
+      font-size: 10px;
+      color: var(--text-dim);
+    }
+    .trade-list {
+      max-height: 200px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .trade-list::-webkit-scrollbar { width: 3px; }
+    .trade-list::-webkit-scrollbar-track { background: transparent; }
+    .trade-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+    .trade-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 6px;
+      background: var(--bg);
+      border-radius: 5px;
+      font-size: 11px;
+    }
+    .trade-id {
+      font-size: 9px;
+      color: var(--text-dim);
+      min-width: 18px;
+    }
+    .trade-prices {
+      flex: 1;
+      color: var(--text-mid);
+    }
+    .trade-shares {
+      font-size: 9px;
+      color: var(--text-dim);
+    }
+    .trade-hold {
+      font-size: 9px;
+      color: var(--text-dim);
+      min-width: 32px;
+      text-align: right;
+    }
+    .trade-reason {
+      font-size: 8px;
+      font-weight: 700;
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      letter-spacing: 0.5px;
+      padding: 1px 4px;
+      border-radius: 3px;
+      min-width: 20px;
+      text-align: center;
+    }
+    .trade-reason.tp { background: var(--green-dim); color: var(--green); }
+    .trade-reason.sl { background: var(--red-dim); color: var(--red); }
+    .trade-reason.tl { background: rgba(136,136,136,0.15); color: var(--text-dim); }
+    .trade-reason.ss { background: rgba(96,165,250,0.15); color: var(--blue); }
+    .trade-pnl {
+      font-weight: 700;
+      min-width: 55px;
+      text-align: right;
+    }
+    .trade-pnl.profit { color: var(--green); }
+    .trade-pnl.loss { color: var(--red); }
+    .no-trades {
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 11px;
+      padding: 12px 0;
+    }
+
+    /* Stats summary */
+    .stats-row {
+      display: flex;
+      gap: 6px;
+    }
+    .stat-box {
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 8px;
+      text-align: center;
+    }
+    .stat-label {
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 8px;
+      letter-spacing: 1px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+    }
+    .stat-value {
+      font-size: 16px;
+      font-weight: 700;
+      margin-top: 2px;
+    }
+
+    /* Desktop layout */
+    @media (min-width: 768px) {
+      .container {
+        max-width: 800px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <span class="logo">RubberBand BOT</span>
+      <div class="header-controls">
+        <a href="/" class="nav-btn">DASHBOARD</a>
+        <div class="status">
+          <span id="status-text">CONNECTING</span>
+          <div class="dot" id="dot"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab bar -->
+    <div class="tab-bar">
+      <button class="tab-btn active" id="tab-live" onclick="switchTab('live')">LIVE</button>
+      <button class="tab-btn" id="tab-demo" onclick="switchTab('demo')">DEMO</button>
+    </div>
+
+    <!-- Bot status pill + warmup bar -->
+    <div class="status-row">
+      <span class="status-pill warming" id="status-pill">WARMING UP</span>
+      <div class="warmup-track" id="warmup-track">
+        <div class="warmup-fill" id="warmup-fill" style="width: 0%"></div>
+      </div>
+      <span class="warmup-pct" id="warmup-pct">0%</span>
+    </div>
+
+    <!-- Cash display -->
+    <div class="cash-card">
+      <div class="cash-label">TOTAL VALUE</div>
+      <div class="cash-amount" id="cash-amount">$10,000.00</div>
+      <div class="cash-pnl flat" id="cash-pnl">$0.00 (0.00%)</div>
+    </div>
+
+    <!-- Position card (visible when in position) -->
+    <div class="position-card" id="position-card">
+      <div class="pos-header">
+        <span class="pos-title">OPEN POSITION</span>
+        <span class="pos-pnl profit" id="pos-pnl">+$0.00</span>
+      </div>
+      <div class="pos-details">
+        <span id="pos-shares">0 shares</span>
+        <span>@</span>
+        <span id="pos-entry">$0.00</span>
+        <span id="pos-pnl-pct">(0.00%)</span>
+      </div>
+    </div>
+
+    <!-- Stats summary row -->
+    <div class="stats-row">
+      <div class="stat-box">
+        <div class="stat-label">TRADES</div>
+        <div class="stat-value" id="stat-trades">0</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">WIN RATE</div>
+        <div class="stat-value" id="stat-winrate">--</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">BEST</div>
+        <div class="stat-value" id="stat-best" style="color: var(--text-dim)">--</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">WORST</div>
+        <div class="stat-value" id="stat-worst" style="color: var(--text-dim)">--</div>
+      </div>
+    </div>
+
+    <!-- Metrics -->
+    <div class="card">
+      <div class="card-title">5-MIN LEVELS</div>
+      <div class="levels-grid">
+        <div class="level-item">
+          <span class="level-label">FLOOR</span>
+          <span class="level-value green" id="floor">--</span>
+        </div>
+        <div class="level-item">
+          <span class="level-label">CEIL</span>
+          <span class="level-value red" id="ceil">--</span>
+        </div>
+        <div class="level-item">
+          <span class="level-label">MODE</span>
+          <span class="level-value yellow" id="mode">--</span>
+        </div>
+        <div class="level-item">
+          <span class="level-label">VWAP</span>
+          <span class="level-value blue" id="vwap">--</span>
+        </div>
+      </div>
+      <div class="signal-row">
+        <span class="signal-badge wait" id="signal-badge">WAIT</span>
+        <span class="signal-score" id="signal-score">0</span>
+        <div class="gauge-track">
+          <div class="gauge-fill low" id="gauge-fill" style="width: 0%"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chart -->
+    <div class="chart-section">
+      <div class="chart-head">
+        <span class="card-title" style="margin:0">DAY CHART</span>
+        <span style="font-size:10px; color:var(--text-dim)" id="chart-price-label"></span>
+      </div>
+      <div class="chart-wrap">
+        <canvas id="chart"></canvas>
+      </div>
+      <div class="legend">
+        <div class="legend-item"><div class="legend-dot" style="background:var(--text-mid)"></div>PRICE</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--green)"></div>BUY</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--red)"></div>SELL</div>
+      </div>
+    </div>
+
+    <!-- Trade log -->
+    <div class="trade-log">
+      <div class="trade-log-header">
+        <span class="card-title" style="margin:0">TRADE LOG</span>
+        <span class="trade-count" id="trade-count">0 trades</span>
+      </div>
+      <div class="trade-list" id="trade-list">
+        <div class="no-trades">No trades yet</div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/bot.js?v=1"></script>
+</body>
+</html>

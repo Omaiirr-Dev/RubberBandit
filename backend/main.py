@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse
 from dotenv import load_dotenv
 
 from backend.engine import TradingEngine, DayTracker
+from backend.bot import TradingBot
 
 load_dotenv()
 
@@ -40,6 +41,12 @@ alpaca_task = None
 # Per-client demo state: {ws: {"task": Task, "engine": TradingEngine}}
 demo_clients: dict[WebSocket, dict] = {}
 
+# ---- Bot Trading ----
+bot = TradingBot()                  # live bot (fed by Alpaca ticks)
+demo_bot = TradingBot(demo=True)    # demo bot (fed by fake ticks 24/7)
+bot_clients: set[WebSocket] = set()
+demo_bot_task = None
+
 
 async def broadcast(data: dict):
     """Send to all non-demo clients."""
@@ -53,6 +60,26 @@ async def broadcast(data: dict):
         except Exception:
             dead.add(ws)
     clients.difference_update(dead)
+
+
+async def broadcast_bot():
+    """Send both live + demo bot state to all bot page clients."""
+    if not bot_clients:
+        return
+    live_state = bot.get_state()
+    demo_state = demo_bot.get_state()
+    msg = json.dumps({
+        "type": "bot_update",
+        "live": live_state,
+        "demo": demo_state,
+    })
+    dead = set()
+    for ws in bot_clients:
+        try:
+            await ws.send_text(msg)
+        except Exception:
+            dead.add(ws)
+    bot_clients.difference_update(dead)
 
 
 async def connect_alpaca():
@@ -89,6 +116,7 @@ async def connect_alpaca():
                         if item.get("T") == "t":
                             price = float(item["p"])
                             volume = float(item.get("s", 1))
+                            now = time.time()
                             engine.add_tick(price, volume)
                             day_tracker.add_tick(price)
                             state = engine.get_state()
@@ -97,18 +125,43 @@ async def connect_alpaca():
                             state["day_high"] = round(day_tracker.day_high, 4)
                             state["day_low"] = round(day_tracker.day_low, 4) if day_tracker.day_low != float("inf") else 0
                             await broadcast(state)
+                            # Feed live bot
+                            bot.add_tick(price, volume, now)
+                            await broadcast_bot()
         except Exception as e:
             print(f"[Alpaca] Connection error: {e}. Reconnecting in 5s...")
             await asyncio.sleep(5)
 
 
+async def demo_bot_feed():
+    """Generate fake ticks for the demo bot 24/7."""
+    import random
+
+    base_price = 135.00
+    price = base_price
+    while True:
+        delta = random.uniform(-0.15, 0.15)
+        price += delta + (base_price - price) * 0.002
+        price = round(price, 2)
+        vol = random.randint(10, 500)
+        now = time.time()
+        demo_bot.add_tick(price, vol, now)
+        await broadcast_bot()
+        await asyncio.sleep(1)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global alpaca_task
+    global alpaca_task, demo_bot_task
+    # Always start demo bot feed
+    demo_bot_task = asyncio.create_task(demo_bot_feed())
+    print("[Bot] Demo bot started (fake ticks 24/7)")
+
     if ALPACA_API_KEY and ALPACA_API_KEY != "your_alpaca_api_key_here":
         try:
             bars = await fetch_day_backfill(TICKER)
             day_tracker.load_backfill(bars)
+            bot.day_tracker.load_backfill(bars)
             print(f"[DayTracker] Backfilled {len(bars)} bars since market open")
         except Exception as e:
             print(f"[DayTracker] Backfill failed: {e}")
@@ -119,6 +172,8 @@ async def lifespan(app: FastAPI):
     yield
     if alpaca_task:
         alpaca_task.cancel()
+    if demo_bot_task:
+        demo_bot_task.cancel()
     for entry in demo_clients.values():
         entry["task"].cancel()
 
@@ -323,6 +378,65 @@ async def websocket_endpoint(ws: WebSocket):
         await stop_demo(ws)
 
 
+@app.websocket("/ws/bot")
+async def bot_websocket_endpoint(ws: WebSocket):
+    await ws.accept()
+    bot_clients.add(ws)
+    try:
+        # Send initial data for both bots
+        # Live bot day chart
+        live_day = bot.day_tracker.get_downsampled(500)
+        if live_day:
+            await ws.send_text(json.dumps({
+                "type": "day_init_live",
+                "prices": live_day,
+            }))
+        # Demo bot day chart
+        demo_day = demo_bot.day_tracker.get_downsampled(500)
+        if demo_day:
+            await ws.send_text(json.dumps({
+                "type": "day_init_demo",
+                "prices": demo_day,
+            }))
+        # Trade logs
+        await ws.send_text(json.dumps({
+            "type": "trade_log_live",
+            "trades": bot.get_all_trades(),
+        }))
+        await ws.send_text(json.dumps({
+            "type": "trade_log_demo",
+            "trades": demo_bot.get_all_trades(),
+        }))
+        # Trade markers
+        await ws.send_text(json.dumps({
+            "type": "markers_live",
+            "markers": bot.get_trade_markers(),
+        }))
+        await ws.send_text(json.dumps({
+            "type": "markers_demo",
+            "markers": demo_bot.get_trade_markers(),
+        }))
+        # Current state
+        await ws.send_text(json.dumps({
+            "type": "bot_update",
+            "live": bot.get_state(),
+            "demo": demo_bot.get_state(),
+        }))
+    except Exception:
+        pass
+    try:
+        while True:
+            msg = await ws.receive_text()
+            # Bot page doesn't need commands for now, but keep socket alive
+            pass
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        bot_clients.discard(ws)
+
+
 # Serve frontend
 app.mount("/static", StaticFiles(directory="frontend/static"), name="static")
 
@@ -330,3 +444,8 @@ app.mount("/static", StaticFiles(directory="frontend/static"), name="static")
 @app.get("/")
 async def root():
     return FileResponse("frontend/index.html")
+
+
+@app.get("/bot")
+async def bot_page():
+    return FileResponse("frontend/bot.html")
