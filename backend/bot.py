@@ -23,19 +23,19 @@ WARMUP_SECONDS_DEMO = 45    # 45 seconds (demo)
 BUY_THRESHOLD = 72           # catch more dips (engine's base is 70)
 SELL_SIGNAL_THRESHOLD = 72
 
-TAKE_PROFIT_PCT = 0.20       # +0.20% — smaller, faster wins (scalp)
-STOP_LOSS_PCT = -0.20        # -0.20% — tighter stop to match
-MAX_HOLD_SECONDS = 300       # 5 minutes — get out quicker
+TAKE_PROFIT_PCT = 0.10       # +0.10% — micro scalps (~$5 net per win)
+STOP_LOSS_PCT = -0.12        # -0.12% — tight stop, cut losers fast
+MAX_HOLD_SECONDS = 180       # 3 minutes — true scalp, in and out
 
-COOLDOWN_SECONDS = 60        # 1 minute — scalpers jump back fast
+COOLDOWN_SECONDS = 30        # 30 seconds — rapid re-entry
 
-EXEC_DELAY_MIN = 0.5         # seconds — faster reactions
-EXEC_DELAY_MAX = 1.5
+EXEC_DELAY_MIN = 0.3         # seconds — fast limit-order style
+EXEC_DELAY_MAX = 1.0
 
 SLIPPAGE_BASE_MIN = 0.00
-SLIPPAGE_BASE_MAX = 0.05
-SLIPPAGE_SPIKE_CHANCE = 0.08
-SLIPPAGE_SPIKE_MAX = 0.12
+SLIPPAGE_BASE_MAX = 0.02     # 0-2 cents (scalpers use limit orders)
+SLIPPAGE_SPIKE_CHANCE = 0.05 # 5% chance of bad fill
+SLIPPAGE_SPIKE_MAX = 0.06    # max 6 cents on bad fill
 
 SPREAD_PER_SHARE = 0.02
 
