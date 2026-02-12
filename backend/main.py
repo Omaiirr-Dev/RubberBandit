@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from dotenv import load_dotenv
 
-from backend.engine import TradingEngine
+from backend.engine import TradingEngine, DayTracker
 
 load_dotenv()
 
@@ -30,6 +30,8 @@ PORT = int(os.getenv("PORT", "8000"))
 engine = TradingEngine()
 engine.spread = SPREAD
 engine.position_size = POSITION_SIZE
+
+day_tracker = DayTracker()
 
 # Connected frontend clients
 clients: set[WebSocket] = set()
@@ -88,8 +90,12 @@ async def connect_alpaca():
                             price = float(item["p"])
                             volume = float(item.get("s", 1))
                             engine.add_tick(price, volume)
+                            day_tracker.add_tick(price)
                             state = engine.get_state()
                             state["demo"] = False
+                            state["top5"] = day_tracker.get_top5()
+                            state["day_high"] = round(day_tracker.day_high, 4)
+                            state["day_low"] = round(day_tracker.day_low, 4) if day_tracker.day_low != float("inf") else 0
                             await broadcast(state)
         except Exception as e:
             print(f"[Alpaca] Connection error: {e}. Reconnecting in 5s...")
@@ -100,6 +106,12 @@ async def connect_alpaca():
 async def lifespan(app: FastAPI):
     global alpaca_task
     if ALPACA_API_KEY and ALPACA_API_KEY != "your_alpaca_api_key_here":
+        try:
+            bars = await fetch_day_backfill(TICKER)
+            day_tracker.load_backfill(bars)
+            print(f"[DayTracker] Backfilled {len(bars)} bars since market open")
+        except Exception as e:
+            print(f"[DayTracker] Backfill failed: {e}")
         alpaca_task = asyncio.create_task(connect_alpaca())
         print(f"[RubberBand] Streaming {TICKER} from Alpaca")
     else:
@@ -111,7 +123,7 @@ async def lifespan(app: FastAPI):
         entry["task"].cancel()
 
 
-async def demo_feed(ws: WebSocket, demo_engine: TradingEngine):
+async def demo_feed(ws: WebSocket, demo_engine: TradingEngine, demo_day: DayTracker):
     """Generate fake ticks for a single client."""
     import random
 
@@ -123,8 +135,12 @@ async def demo_feed(ws: WebSocket, demo_engine: TradingEngine):
         price = round(price, 2)
         vol = random.randint(10, 500)
         demo_engine.add_tick(price, vol)
+        demo_day.add_tick(price)
         state = demo_engine.get_state()
         state["demo"] = True
+        state["top5"] = demo_day.get_top5()
+        state["day_high"] = round(demo_day.day_high, 4)
+        state["day_low"] = round(demo_day.day_low, 4) if demo_day.day_low != float("inf") else 0
         try:
             await ws.send_text(json.dumps(state))
         except Exception:
@@ -138,8 +154,9 @@ async def start_demo(ws: WebSocket):
     demo_engine = TradingEngine()
     demo_engine.spread = SPREAD
     demo_engine.position_size = POSITION_SIZE
-    task = asyncio.create_task(demo_feed(ws, demo_engine))
-    demo_clients[ws] = {"task": task, "engine": demo_engine}
+    demo_day = DayTracker()
+    task = asyncio.create_task(demo_feed(ws, demo_engine, demo_day))
+    demo_clients[ws] = {"task": task, "engine": demo_engine, "day": demo_day}
 
 
 async def stop_demo(ws: WebSocket):
@@ -188,6 +205,43 @@ def generate_demo_context(count: int = 30) -> list:
     return bars
 
 
+async def fetch_day_backfill(ticker: str) -> list:
+    """Fetch 1-min bars since market open (2:30 PM UTC) today."""
+    now = datetime.now(timezone.utc)
+    today_open = now.replace(hour=14, minute=30, second=0, microsecond=0)
+    if now < today_open:
+        return []
+    url = f"https://data.alpaca.markets/v2/stocks/{ticker}/bars"
+    headers = {
+        "APCA-API-KEY-ID": ALPACA_API_KEY,
+        "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
+    }
+    all_bars = []
+    page_token = None
+    while True:
+        params = {
+            "timeframe": "1Min",
+            "start": today_open.isoformat(),
+            "end": now.isoformat(),
+            "limit": "10000",
+            "feed": "iex",
+        }
+        if page_token:
+            params["page_token"] = page_token
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(url, params=params, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+        for bar in data.get("bars", []):
+            ts = bar["t"]
+            ts_ms = int(datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp() * 1000)
+            all_bars.append((ts_ms, float(bar["c"]), float(bar["v"])))
+        page_token = data.get("next_page_token")
+        if not page_token:
+            break
+    return all_bars
+
+
 app = FastAPI(title="RubberBand", lifespan=lifespan)
 
 
@@ -199,7 +253,17 @@ async def websocket_endpoint(ws: WebSocket):
     try:
         state = engine.get_state()
         state["demo"] = ws in demo_clients
+        state["top5"] = day_tracker.get_top5()
+        state["day_high"] = round(day_tracker.day_high, 4)
+        state["day_low"] = round(day_tracker.day_low, 4) if day_tracker.day_low != float("inf") else 0
         await ws.send_text(json.dumps(state))
+        # Send full day chart data (one-time on connect)
+        day_data = day_tracker.get_downsampled(500)
+        if day_data:
+            await ws.send_text(json.dumps({
+                "type": "day_init",
+                "prices": day_data,
+            }))
     except Exception:
         pass
     try:

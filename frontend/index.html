@@ -201,6 +201,113 @@
     .context-card.show { display: block; }
     .level-value.cyan { color: var(--cyan); }
 
+    /* Price alert inputs */
+    .alert-row {
+      display: flex;
+      gap: 6px;
+      margin-top: 6px;
+      width: 100%;
+      max-width: 200px;
+    }
+    .alert-input {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      color: var(--text);
+      padding: 4px 6px;
+      font-family: inherit;
+      font-size: 11px;
+      text-align: center;
+      outline: none;
+      -moz-appearance: textfield;
+    }
+    .alert-input::-webkit-inner-spin-button,
+    .alert-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+    .alert-input.alert-high {
+      border-color: rgba(74,222,128,0.3);
+    }
+    .alert-input.alert-high:focus { border-color: var(--green); }
+    .alert-input.alert-high::placeholder { color: rgba(74,222,128,0.3); }
+    .alert-input.alert-low {
+      border-color: rgba(248,113,113,0.3);
+    }
+    .alert-input.alert-low:focus { border-color: var(--red); }
+    .alert-input.alert-low::placeholder { color: rgba(248,113,113,0.3); }
+
+    /* Price flash animations */
+    @keyframes flash-green {
+      0%, 100% { color: var(--text); }
+      50% { color: var(--green); text-shadow: 0 0 12px var(--green); }
+    }
+    @keyframes flash-red {
+      0%, 100% { color: var(--text); }
+      50% { color: var(--red); text-shadow: 0 0 12px var(--red); }
+    }
+    #price.flash-green { animation: flash-green 0.8s infinite; }
+    #price.flash-red { animation: flash-red 0.8s infinite; }
+
+    /* Top 5 card */
+    .top5-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 4px;
+      text-align: center;
+    }
+    .top5-item {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+    .top5-price {
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .top5-count {
+      font-size: 8px;
+      color: var(--text-dim);
+    }
+    .top5-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 5px;
+    }
+    .day-high-val {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--green);
+    }
+    .day-low-val {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--red);
+    }
+
+    /* Chart tabs */
+    .chart-tabs {
+      display: flex;
+      gap: 2px;
+    }
+    .chart-tab {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 8px;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 4px;
+      cursor: pointer;
+      letter-spacing: 0.5px;
+      white-space: nowrap;
+    }
+    .chart-tab.active {
+      border-color: var(--green);
+      color: var(--green);
+      background: var(--green-dim);
+    }
+
     /* Desktop row wrapper — single column on mobile */
     .desktop-row { display: contents; }
     .desktop-right { display: contents; }
@@ -557,6 +664,17 @@
       #timer-display { font-size: 28px; }
       input[type="number"] { width: 64px; font-size: 16px; padding: 8px; }
       button { font-size: 12px; padding: 8px 18px; }
+
+      /* Top 5 */
+      .top5-price { font-size: 14px; }
+      .top5-count { font-size: 9px; }
+      .day-high-val, .day-low-val { font-size: 14px; }
+
+      /* Chart tabs */
+      .chart-tab { font-size: 10px; padding: 3px 10px; }
+
+      /* Alert inputs */
+      .alert-input { font-size: 13px; padding: 5px 8px; }
     }
   </style>
 </head>
@@ -605,8 +723,12 @@
       <div>
         <!-- Price + Action -->
         <div class="top-row">
-          <div class="price-card">
+          <div class="price-card" style="flex-direction:column;">
             <div id="price">$0.00</div>
+            <div class="alert-row">
+              <input type="number" id="alert-high" class="alert-input alert-high" placeholder="High" step="0.01" inputmode="decimal" />
+              <input type="number" id="alert-low" class="alert-input alert-low" placeholder="Low" step="0.01" inputmode="decimal" />
+            </div>
           </div>
           <div id="action-card" class="action-card wait">
             <div class="action-label">SIGNAL</div>
@@ -656,6 +778,25 @@
             </div>
           </div>
         </div>
+        <!-- Top 5 + Day High/Low -->
+        <div id="top5-card" class="card">
+          <div class="top5-header">
+            <span class="card-title" style="margin:0">Top 5 Prices</span>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <span style="font-size:8px;color:var(--text-dim)">H</span>
+              <span id="day-high" class="day-high-val">---</span>
+              <span style="font-size:8px;color:var(--text-dim)">L</span>
+              <span id="day-low" class="day-low-val">---</span>
+            </div>
+          </div>
+          <div id="top5-grid" class="top5-grid">
+            <div class="top5-item"><span class="top5-price" style="color:var(--text-dim)">---</span><span class="top5-count">0</span></div>
+            <div class="top5-item"><span class="top5-price" style="color:var(--text-dim)">---</span><span class="top5-count">0</span></div>
+            <div class="top5-item"><span class="top5-price" style="color:var(--text-dim)">---</span><span class="top5-count">0</span></div>
+            <div class="top5-item"><span class="top5-price" style="color:var(--text-dim)">---</span><span class="top5-count">0</span></div>
+            <div class="top5-item"><span class="top5-price" style="color:var(--text-dim)">---</span><span class="top5-count">0</span></div>
+          </div>
+        </div>
         <!-- Window bar -->
         <div class="window-row">
           <span>TIME WINDOW</span>
@@ -684,7 +825,10 @@
     <!-- Chart -->
     <div class="chart-section">
       <div class="chart-head">
-        <span class="card-title" style="margin:0">Live Chart</span>
+        <div class="chart-tabs">
+          <button id="tab-live" class="chart-tab active">LIVE</button>
+          <button id="tab-day" class="chart-tab">SINCE OPEN</button>
+        </div>
         <div class="legend">
           <div class="legend-item"><div class="legend-dot" style="background:var(--green)"></div>Sup</div>
           <div class="legend-item"><div class="legend-dot" style="background:var(--red)"></div>Res</div>
@@ -698,6 +842,6 @@
     </div>
 
   </div>
-  <script src="/static/app.js?v=19"></script>
+  <script src="/static/app.js?v=20"></script>
 </body>
 </html>

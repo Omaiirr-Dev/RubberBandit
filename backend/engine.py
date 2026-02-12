@@ -3,11 +3,87 @@ Trading Decision Support Engine
 - 5-minute sliding window (support floor, resistance ceiling, mode price)
 - Real-time VWAP
 - Signal scoring
+- Day-level tracking (since market open)
 """
 
 import time
 import math
 from collections import deque
+
+
+class DayTracker:
+    """Tracks all prices since market open for full-day chart + frequency analysis."""
+
+    def __init__(self):
+        self.prices = []       # [(timestamp_ms, price), ...]
+        self.freq_bins = {}    # {price_cents: count}
+        self.day_high = 0.0
+        self.day_low = float("inf")
+
+    def add_tick(self, price: float, timestamp: float = None):
+        ts = timestamp or time.time()
+        self.prices.append((int(ts * 1000), price))
+        key = round(price, 2)
+        self.freq_bins[key] = self.freq_bins.get(key, 0) + 1
+        if price > self.day_high:
+            self.day_high = price
+        if price < self.day_low:
+            self.day_low = price
+
+    def load_backfill(self, bars: list):
+        """Load historical bars: [(timestamp_ms, close_price, volume), ...]"""
+        for ts_ms, price, vol in bars:
+            self.prices.append((ts_ms, price))
+            key = round(price, 2)
+            self.freq_bins[key] = self.freq_bins.get(key, 0) + max(1, int(vol))
+            if price > self.day_high:
+                self.day_high = price
+            if price < self.day_low:
+                self.day_low = price
+
+    def get_top5(self) -> list:
+        """Top 5 most-hit prices, sorted price descending."""
+        if not self.freq_bins:
+            return []
+        top = sorted(self.freq_bins.items(), key=lambda x: x[1], reverse=True)[:5]
+        top.sort(key=lambda x: x[0], reverse=True)
+        return [{"price": p, "count": c} for p, c in top]
+
+    def get_downsampled(self, target: int = 500) -> list:
+        """LTTB downsample for initial client delivery."""
+        data = self.prices
+        n = len(data)
+        if n <= target:
+            return list(data)
+        # Largest-Triangle-Three-Buckets
+        out = [data[0]]
+        bucket_size = (n - 2) / (target - 2)
+        a = 0
+        for i in range(1, target - 1):
+            start = int((i - 1) * bucket_size) + 1
+            end = int(i * bucket_size) + 1
+            nxt_start = int(i * bucket_size) + 1
+            nxt_end = min(int((i + 1) * bucket_size) + 1, n)
+            avg_x = sum(data[j][0] for j in range(nxt_start, nxt_end)) / max(1, nxt_end - nxt_start)
+            avg_y = sum(data[j][1] for j in range(nxt_start, nxt_end)) / max(1, nxt_end - nxt_start)
+            best = -1
+            best_idx = start
+            ax, ay = data[a]
+            for j in range(start, min(end, n)):
+                area = abs((data[j][0] - ax) * (avg_y - ay) - (avg_x - ax) * (data[j][1] - ay))
+                if area > best:
+                    best = area
+                    best_idx = j
+            out.append(data[best_idx])
+            a = best_idx
+        out.append(data[-1])
+        return out
+
+    def reset(self):
+        self.prices.clear()
+        self.freq_bins.clear()
+        self.day_high = 0.0
+        self.day_low = float("inf")
 
 
 class TradingEngine:
