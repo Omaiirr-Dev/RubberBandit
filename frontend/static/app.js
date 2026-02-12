@@ -13,6 +13,9 @@
   const MAX_DAY_POINTS = 2000;
   let chartMode = "live"; // "live" or "day"
 
+  // Hover crosshair state for day chart
+  let hoverX = null; // CSS pixel X relative to canvas, or null
+
   // Timer state — uses absolute timestamps so it works when backgrounded
   let timerEndAt = null; // Date.now() ms when timer finishes
   let timerInterval = null;
@@ -496,6 +499,71 @@
       ctx.textAlign = "left";
       ctx.fillText(state.price.toFixed(2), w + 3, cy + 3);
     }
+
+    // Hover crosshair
+    if (hoverX !== null && hoverX >= 0 && hoverX <= w) {
+      // Find nearest data point by X position
+      const hoverT = minT + (hoverX / w) * rangeT;
+      let nearest = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < dayPrices.length; i++) {
+        const dist = Math.abs(dayPrices[i].ts - hoverT);
+        if (dist < bestDist) { bestDist = dist; nearest = i; }
+      }
+      const pt = dayPrices[nearest];
+      const px = toX(pt.ts);
+      const py = toY(pt.price);
+
+      // Vertical line
+      ctx.strokeStyle = "rgba(240,240,240,0.3)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([2, 2]);
+      ctx.beginPath();
+      ctx.moveTo(px, 0);
+      ctx.lineTo(px, ch);
+      ctx.stroke();
+
+      // Horizontal line
+      ctx.beginPath();
+      ctx.moveTo(0, py);
+      ctx.lineTo(w, py);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Dot on the price line
+      ctx.beginPath();
+      ctx.arc(px, py, 3, 0, Math.PI * 2);
+      ctx.fillStyle = "#f0f0f0";
+      ctx.fill();
+
+      // Tooltip background + text
+      const d = new Date(pt.ts);
+      const hh = d.getHours().toString().padStart(2, "0");
+      const mm = d.getMinutes().toString().padStart(2, "0");
+      const ss = d.getSeconds().toString().padStart(2, "0");
+      const label = `$${pt.price.toFixed(2)}  ${hh}:${mm}:${ss}`;
+      ctx.font = "bold 9px 'JetBrains Mono', monospace";
+      const tw = ctx.measureText(label).width + 8;
+      const th = 16;
+      // Position tooltip: avoid going off edges
+      let tx = px - tw / 2;
+      if (tx < 0) tx = 0;
+      if (tx + tw > w) tx = w - tw;
+      let ty = py - th - 6;
+      if (ty < 0) ty = py + 8;
+
+      ctx.fillStyle = "rgba(17,17,17,0.9)";
+      ctx.beginPath();
+      ctx.roundRect(tx, ty, tw, th, 3);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(240,240,240,0.3)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      ctx.fillStyle = "#f0f0f0";
+      ctx.textAlign = "left";
+      ctx.fillText(label, tx + 4, ty + 11);
+    }
   }
 
   // ---- Chart Tab Switching ----
@@ -655,6 +723,28 @@
     // Chart tab switching
     $("#tab-live").addEventListener("click", () => switchChart("live"));
     $("#tab-day").addEventListener("click", () => switchChart("day"));
+
+    // Day chart hover crosshair (mouse + touch)
+    const chartCanvas = $("#chart");
+    function handleHover(clientX) {
+      if (chartMode !== "day" || dayPrices.length < 2) return;
+      const rect = chartCanvas.getBoundingClientRect();
+      hoverX = clientX - rect.left;
+      drawDayChart();
+    }
+    chartCanvas.addEventListener("mousemove", (e) => handleHover(e.clientX));
+    chartCanvas.addEventListener("mouseleave", () => {
+      hoverX = null;
+      if (chartMode === "day") drawDayChart();
+    });
+    chartCanvas.addEventListener("touchmove", (e) => {
+      e.preventDefault();
+      handleHover(e.touches[0].clientX);
+    }, { passive: false });
+    chartCanvas.addEventListener("touchend", () => {
+      hoverX = null;
+      if (chartMode === "day") drawDayChart();
+    });
 
     // Also catch visibility change to immediately re-check timer
     document.addEventListener("visibilitychange", () => {
