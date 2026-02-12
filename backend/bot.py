@@ -3,11 +3,13 @@ Autonomous Trading Bot
 - State machine: WARMING_UP → WATCHING → ENTERING → IN_POSITION → EXITING → COOLING_DOWN
 - Conservative mean-reversion scalping using TradingEngine signals
 - Realistic: slippage, spread, execution delay, human-speed trading
+- Smart filters: trend (EMA), volume exhaustion, reversal confirmation, momentum reject
 """
 
 import time
 import random
 from enum import Enum
+from collections import deque
 
 from backend.engine import TradingEngine, DayTracker
 
@@ -36,6 +38,23 @@ SLIPPAGE_SPIKE_CHANCE = 0.08
 SLIPPAGE_SPIKE_MAX = 0.12
 
 SPREAD_PER_SHARE = 0.02
+
+# ---- Smart Filter Parameters ----
+
+# Trend filter: EMA crossover
+EMA_FAST_PERIOD = 20         # fast EMA (ticks)
+EMA_SLOW_PERIOD = 60         # slow EMA (ticks)
+
+# Momentum reject: skip trade if price dropped too fast
+MOMENTUM_REJECT_PCT = 0.30   # reject if price dropped >0.30% in window
+MOMENTUM_WINDOW_SEC = 120    # look back 2 minutes
+
+# Reversal confirmation: need consecutive higher ticks before entering
+REVERSAL_TICKS_NEEDED = 3    # 3 higher ticks in a row = bounce confirmed
+
+# Volume exhaustion: recent volume should be declining at support
+VOLUME_RECENT = 10           # last N ticks (recent)
+VOLUME_PRIOR = 30            # prior N ticks (compare against)
 
 
 class BotState(str, Enum):
@@ -79,6 +98,24 @@ class TradingBot:
         self.trades = []
         self.tick_count = 0
 
+        # ---- Smart filter state ----
+
+        # EMA trend filter
+        self.ema_fast = 0.0
+        self.ema_slow = 0.0
+        self.ema_initialized = False
+        self.ema_tick_count = 0
+
+        # Reversal confirmation: count consecutive up-ticks
+        self.prev_price = 0.0
+        self.consecutive_up = 0
+
+        # Momentum reject: recent prices with timestamps
+        self.price_history = deque()  # (timestamp, price)
+
+        # Volume exhaustion: recent volumes
+        self.volume_history = deque(maxlen=VOLUME_PRIOR + VOLUME_RECENT)
+
     def add_tick(self, price: float, volume: float = 1.0, timestamp: float = None):
         now = timestamp or time.time()
 
@@ -89,7 +126,88 @@ class TradingBot:
         self.tick_count += 1
         self.engine.add_tick(price, volume, now)
         self.day_tracker.add_tick(price, now)
+
+        # Update smart filter trackers
+        self._update_ema(price)
+        self._update_reversal(price)
+        self._update_momentum(price, now)
+        self._update_volume(volume)
+
         self._run_state_machine(price, now)
+
+    # ---- Smart filter updates ----
+
+    def _update_ema(self, price: float):
+        """Update fast and slow EMAs."""
+        self.ema_tick_count += 1
+        if self.ema_tick_count == 1:
+            self.ema_fast = price
+            self.ema_slow = price
+            return
+        # EMA multipliers
+        k_fast = 2.0 / (EMA_FAST_PERIOD + 1)
+        k_slow = 2.0 / (EMA_SLOW_PERIOD + 1)
+        self.ema_fast = price * k_fast + self.ema_fast * (1 - k_fast)
+        self.ema_slow = price * k_slow + self.ema_slow * (1 - k_slow)
+        if self.ema_tick_count >= EMA_SLOW_PERIOD:
+            self.ema_initialized = True
+
+    def _update_reversal(self, price: float):
+        """Track consecutive up-ticks for reversal confirmation."""
+        if self.prev_price > 0:
+            if price > self.prev_price:
+                self.consecutive_up += 1
+            elif price < self.prev_price:
+                self.consecutive_up = 0
+            # price == prev: keep count unchanged
+        self.prev_price = price
+
+    def _update_momentum(self, price: float, now: float):
+        """Track recent prices for momentum rejection."""
+        self.price_history.append((now, price))
+        # Prune old entries
+        cutoff = now - MOMENTUM_WINDOW_SEC
+        while self.price_history and self.price_history[0][0] < cutoff:
+            self.price_history.popleft()
+
+    def _update_volume(self, volume: float):
+        """Track recent volumes for exhaustion check."""
+        self.volume_history.append(volume)
+
+    # ---- Smart filter checks ----
+
+    def _check_trend(self) -> bool:
+        """Returns True if trend is favorable (uptrend or range). False = downtrend, don't buy."""
+        if not self.ema_initialized:
+            return True  # not enough data yet, allow trades
+        return self.ema_fast >= self.ema_slow * 0.9998  # tiny tolerance for flat
+
+    def _check_momentum(self, price: float) -> bool:
+        """Returns True if no recent sharp drop. False = price crashed, skip trade."""
+        if len(self.price_history) < 5:
+            return True  # not enough data
+        oldest_price = self.price_history[0][1]
+        if oldest_price <= 0:
+            return True
+        drop_pct = ((oldest_price - price) / oldest_price) * 100
+        return drop_pct < MOMENTUM_REJECT_PCT
+
+    def _check_reversal(self) -> bool:
+        """Returns True if price is bouncing (consecutive up-ticks). False = still falling."""
+        return self.consecutive_up >= REVERSAL_TICKS_NEEDED
+
+    def _check_volume_exhaustion(self) -> bool:
+        """Returns True if recent volume < prior volume (sellers exhausting). False = still heavy selling."""
+        total = len(self.volume_history)
+        if total < VOLUME_RECENT + VOLUME_PRIOR:
+            return True  # not enough data, allow trades
+        vols = list(self.volume_history)
+        prior = vols[-(VOLUME_RECENT + VOLUME_PRIOR):-VOLUME_RECENT]
+        recent = vols[-VOLUME_RECENT:]
+        avg_prior = sum(prior) / len(prior) if prior else 1
+        avg_recent = sum(recent) / len(recent) if recent else 1
+        # Recent volume should be lower than prior (exhaustion)
+        return avg_recent <= avg_prior * 1.2  # 20% tolerance
 
     def _calculate_slippage(self) -> float:
         if random.random() < SLIPPAGE_SPIKE_CHANCE:
@@ -107,6 +225,17 @@ class TradingBot:
             if (self.engine.action == "BUY"
                     and self.engine.signal_score >= BUY_THRESHOLD
                     and self.cash > 100):
+                # ---- Smart filters gate ----
+                # All must pass for the bot to enter
+                if not self._check_trend():
+                    return  # downtrend — skip
+                if not self._check_momentum(price):
+                    return  # sharp drop — skip
+                if not self._check_reversal():
+                    return  # not bouncing yet — wait
+                if not self._check_volume_exhaustion():
+                    return  # heavy selling — skip
+
                 self.intent_price = price
                 self.exec_delay = random.uniform(EXEC_DELAY_MIN, EXEC_DELAY_MAX)
                 self._transition(BotState.ENTERING, now)
@@ -227,6 +356,9 @@ class TradingBot:
             elapsed = time.time() - self.first_tick_time
             warmup_pct = min(100, int((elapsed / self.warmup_seconds) * 100))
 
+        # Trend indicator for frontend
+        trend = "up" if self.ema_fast >= self.ema_slow else "down"
+
         return {
             "bot_status": self.state.value,
             "cash": round(self.cash, 2),
@@ -251,6 +383,9 @@ class TradingBot:
             "day_high": round(self.day_tracker.day_high, 4),
             "day_low": round(self.day_tracker.day_low, 4) if self.day_tracker.day_low != float("inf") else 0,
             "recent_trades": self.trades[-5:] if self.trades else [],
+            "trend": trend,
+            "ema_fast": round(self.ema_fast, 4),
+            "ema_slow": round(self.ema_slow, 4),
         }
 
     def get_all_trades(self) -> list:
@@ -278,3 +413,12 @@ class TradingBot:
         self.position_entry_time = 0.0
         self.trades.clear()
         self.tick_count = 0
+        # Reset filter state
+        self.ema_fast = 0.0
+        self.ema_slow = 0.0
+        self.ema_initialized = False
+        self.ema_tick_count = 0
+        self.prev_price = 0.0
+        self.consecutive_up = 0
+        self.price_history.clear()
+        self.volume_history.clear()

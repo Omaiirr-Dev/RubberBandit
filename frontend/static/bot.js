@@ -49,6 +49,7 @@
   const vwapEl = $("vwap");
   const signalBadge = $("signal-badge");
   const signalScore = $("signal-score");
+  const trendBadge = $("trend-badge");
   const gaugeFill = $("gauge-fill");
   const chartPriceLabel = $("chart-price-label");
   const tradeCount = $("trade-count");
@@ -259,6 +260,11 @@
     signalScore.style.color = action === "BUY" ? "var(--green)" : action === "SELL" ? "var(--red)" : "var(--text-dim)";
     gaugeFill.style.width = score + "%";
     gaugeFill.className = "gauge-fill " + (score >= 70 ? "high" : score >= 40 ? "mid" : "low");
+
+    // Trend
+    const trend = s.trend || "down";
+    trendBadge.textContent = trend === "up" ? "TREND UP" : "TREND DN";
+    trendBadge.className = "trend-badge " + trend;
 
     // Chart
     drawChart();

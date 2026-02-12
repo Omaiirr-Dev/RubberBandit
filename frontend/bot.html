@@ -289,6 +289,16 @@
     .signal-badge.buy { background: var(--green-dim); color: var(--green); }
     .signal-badge.sell { background: var(--red-dim); color: var(--red); }
     .signal-badge.wait { background: rgba(136,136,136,0.1); color: var(--text-dim); }
+    .trend-badge {
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    .trend-badge.up { background: var(--green-dim); color: var(--green); }
+    .trend-badge.down { background: var(--red-dim); color: var(--red); }
     .signal-score {
       font-size: 16px;
       font-weight: 700;
@@ -548,6 +558,7 @@
       <div class="signal-row">
         <span class="signal-badge wait" id="signal-badge">WAIT</span>
         <span class="signal-score" id="signal-score">0</span>
+        <span class="trend-badge down" id="trend-badge">TREND --</span>
         <div class="gauge-track">
           <div class="gauge-fill low" id="gauge-fill" style="width: 0%"></div>
         </div>
@@ -582,6 +593,6 @@
     </div>
   </div>
 
-  <script src="/static/bot.js?v=1"></script>
+  <script src="/static/bot.js?v=2"></script>
 </body>
 </html>
