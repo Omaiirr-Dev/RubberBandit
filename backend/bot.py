@@ -17,20 +17,20 @@ from backend.engine import TradingEngine, DayTracker
 
 STARTING_CASH = 10_000.00
 
-WARMUP_SECONDS = 900         # 15 minutes (live)
-WARMUP_SECONDS_DEMO = 60    # 1 minute (demo)
+WARMUP_SECONDS = 600         # 10 minutes (live)
+WARMUP_SECONDS_DEMO = 45    # 45 seconds (demo)
 
-BUY_THRESHOLD = 78           # stricter than engine's 70
-SELL_SIGNAL_THRESHOLD = 75
+BUY_THRESHOLD = 72           # catch more dips (engine's base is 70)
+SELL_SIGNAL_THRESHOLD = 72
 
-TAKE_PROFIT_PCT = 0.30       # +0.30%
-STOP_LOSS_PCT = -0.25        # -0.25%
-MAX_HOLD_SECONDS = 480       # 8 minutes
+TAKE_PROFIT_PCT = 0.20       # +0.20% — smaller, faster wins (scalp)
+STOP_LOSS_PCT = -0.20        # -0.20% — tighter stop to match
+MAX_HOLD_SECONDS = 300       # 5 minutes — get out quicker
 
-COOLDOWN_SECONDS = 180       # 3 minutes
+COOLDOWN_SECONDS = 60        # 1 minute — scalpers jump back fast
 
-EXEC_DELAY_MIN = 1.0         # seconds
-EXEC_DELAY_MAX = 3.0
+EXEC_DELAY_MIN = 0.5         # seconds — faster reactions
+EXEC_DELAY_MAX = 1.5
 
 SLIPPAGE_BASE_MIN = 0.00
 SLIPPAGE_BASE_MAX = 0.05
@@ -43,18 +43,18 @@ SPREAD_PER_SHARE = 0.02
 
 # Trend filter: EMA crossover
 EMA_FAST_PERIOD = 20         # fast EMA (ticks)
-EMA_SLOW_PERIOD = 60         # slow EMA (ticks)
+EMA_SLOW_PERIOD = 40         # slow EMA — faster adaptation for scalping
 
 # Momentum reject: skip trade if price dropped too fast
-MOMENTUM_REJECT_PCT = 0.30   # reject if price dropped >0.30% in window
-MOMENTUM_WINDOW_SEC = 120    # look back 2 minutes
+MOMENTUM_REJECT_PCT = 0.25   # reject if price dropped >0.25% in window
+MOMENTUM_WINDOW_SEC = 90     # look back 90 seconds (tighter window)
 
 # Reversal confirmation: need consecutive higher ticks before entering
-REVERSAL_TICKS_NEEDED = 3    # 3 higher ticks in a row = bounce confirmed
+REVERSAL_TICKS_NEEDED = 1    # 1 up-tick = bounce starting — scalp speed
 
 # Volume exhaustion: recent volume should be declining at support
-VOLUME_RECENT = 10           # last N ticks (recent)
-VOLUME_PRIOR = 30            # prior N ticks (compare against)
+VOLUME_RECENT = 8            # last N ticks (recent)
+VOLUME_PRIOR = 20            # prior N ticks (compare against)
 
 
 class BotState(str, Enum):
@@ -180,7 +180,7 @@ class TradingBot:
         """Returns True if trend is favorable (uptrend or range). False = downtrend, don't buy."""
         if not self.ema_initialized:
             return True  # not enough data yet, allow trades
-        return self.ema_fast >= self.ema_slow * 0.9998  # tiny tolerance for flat
+        return self.ema_fast >= self.ema_slow * 0.9990  # allow mild dips / range-bound
 
     def _check_momentum(self, price: float) -> bool:
         """Returns True if no recent sharp drop. False = price crashed, skip trade."""
@@ -207,7 +207,7 @@ class TradingBot:
         avg_prior = sum(prior) / len(prior) if prior else 1
         avg_recent = sum(recent) / len(recent) if recent else 1
         # Recent volume should be lower than prior (exhaustion)
-        return avg_recent <= avg_prior * 1.2  # 20% tolerance
+        return avg_recent <= avg_prior * 1.5  # 50% tolerance — more permissive for scalping
 
     def _calculate_slippage(self) -> float:
         if random.random() < SLIPPAGE_SPIKE_CHANCE:
