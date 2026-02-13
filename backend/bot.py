@@ -27,7 +27,7 @@ TAKE_PROFIT_PCT = 0.10       # +0.10% — micro scalps (~$5 net per win)
 STOP_LOSS_PCT = -0.12        # -0.12% — tight stop, cut losers fast
 MAX_HOLD_SECONDS = 180       # 3 minutes — true scalp, in and out
 
-COOLDOWN_SECONDS = 10        # 10 seconds — minimal pause between trades
+COOLDOWN_SECONDS = 5         # 5 seconds — quick reset, catch next wave
 
 EXEC_DELAY_MIN = 0.3         # seconds — fast limit-order style
 EXEC_DELAY_MAX = 1.0
@@ -40,12 +40,12 @@ SLIPPAGE_SPIKE_MAX = 0.06    # max 6 cents on bad fill
 SPREAD_PER_SHARE = 0.02
 
 # ---- Pattern-based scalping targets ----
-TAKE_PROFIT_DOLLARS = 2.50       # quick $2.50 wins
-STOP_LOSS_DOLLARS = -5.00        # cut at -$5
-PAT_MAX_HOLD_SECONDS = 120       # 2 min max (stay nimble)
-PATTERN_WATCH_SEC = 20           # watch 20s before first entry
-PATTERN_WINDOW_SEC = 25          # analyze last 25s of prices
-PATTERN_DIP_THRESHOLD = 0.30     # buy in bottom 30% of range
+TAKE_PROFIT_DOLLARS = 1.50       # grab $1.50 and run (frequent small wins)
+STOP_LOSS_DOLLARS = -4.00        # cut at -$4
+PAT_MAX_HOLD_SECONDS = 90        # 90s max — if it hasn't moved, get out
+PATTERN_WATCH_SEC = 10           # 10s scan — react fast to dips
+PATTERN_WINDOW_SEC = 15          # analyze last 15s of prices (recent action)
+PATTERN_DIP_THRESHOLD = 0.40     # buy in bottom 40% of range (wider net)
 
 # ---- Smart Filter Parameters ----
 
@@ -249,8 +249,8 @@ class TradingBot:
         lo = min(prices)
         rng = hi - lo
 
-        # Need at least $0.03 of movement to detect a pattern
-        if rng < 0.03:
+        # Need at least $0.02 of movement to detect a pattern
+        if rng < 0.02:
             self.pattern_reason = f"Range too flat (${rng:.2f})"
             self.pattern_confidence = 0.0
             return False
@@ -277,7 +277,7 @@ class TradingBot:
         second_half_avg = sum(prices[mid:]) / len(prices[mid:])
 
         # If second half avg is MUCH lower, it's a freefall not a dip
-        if second_half_avg < first_half_avg * 0.998:
+        if second_half_avg < first_half_avg * 0.997:
             # Prices still trending down hard
             self.pattern_reason = "Downtrend — waiting for bottom"
             self.pattern_confidence = round(1.0 - position_in_range, 2)
