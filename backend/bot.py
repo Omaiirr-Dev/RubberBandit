@@ -39,10 +39,13 @@ SLIPPAGE_SPIKE_MAX = 0.06    # max 6 cents on bad fill
 
 SPREAD_PER_SHARE = 0.02
 
-# ---- AI-driven dollar-based targets ----
-AI_TAKE_PROFIT_DOLLARS = 3.00    # auto-sell at $3 profit (frequent small wins)
-AI_STOP_LOSS_DOLLARS = -6.00     # hard stop loss at -$6
-AI_MAX_HOLD_SECONDS = 180        # 3 min max hold for AI trades
+# ---- Pattern-based scalping targets ----
+TAKE_PROFIT_DOLLARS = 2.50       # quick $2.50 wins
+STOP_LOSS_DOLLARS = -5.00        # cut at -$5
+PAT_MAX_HOLD_SECONDS = 120       # 2 min max (stay nimble)
+PATTERN_WATCH_SEC = 20           # watch 20s before first entry
+PATTERN_WINDOW_SEC = 25          # analyze last 25s of prices
+PATTERN_DIP_THRESHOLD = 0.30     # buy in bottom 30% of range
 
 # ---- Smart Filter Parameters ----
 
@@ -121,11 +124,10 @@ class TradingBot:
         # Volume exhaustion: recent volumes
         self.volume_history = deque(maxlen=VOLUME_PRIOR + VOLUME_RECENT)
 
-        # ---- AI Brain integration ----
-        self.ai_recommendation = "HOLD"
-        self.ai_reason = "Waiting for AI..."
-        self.ai_confidence = 0.0
-        self.ai_enabled = False
+        # ---- Pattern detection state ----
+        self.pattern_status = "WAIT"    # WAIT → SCAN → BUY (for frontend)
+        self.pattern_reason = "Warming up..."
+        self.pattern_confidence = 0.0
 
     def add_tick(self, price: float, volume: float = 1.0, timestamp: float = None):
         now = timestamp or time.time()
@@ -174,10 +176,10 @@ class TradingBot:
         self.prev_price = price
 
     def _update_momentum(self, price: float, now: float):
-        """Track recent prices for momentum rejection."""
+        """Track recent prices for pattern detection & momentum."""
         self.price_history.append((now, price))
-        # Prune old entries
-        cutoff = now - MOMENTUM_WINDOW_SEC
+        # Keep enough for pattern window + buffer
+        cutoff = now - max(MOMENTUM_WINDOW_SEC, PATTERN_WINDOW_SEC + 10)
         while self.price_history and self.price_history[0][0] < cutoff:
             self.price_history.popleft()
 
@@ -220,6 +222,72 @@ class TradingBot:
         # Recent volume should be lower than prior (exhaustion)
         return avg_recent <= avg_prior * 1.5  # 50% tolerance — more permissive for scalping
 
+    # ---- Pattern detection entry ----
+
+    def _check_pattern_entry(self, price: float, now: float) -> bool:
+        """
+        Pure price-action dip detector.
+        Looks at last PATTERN_WINDOW_SEC seconds of prices:
+        1. Need enough data (at least 10 ticks in the window)
+        2. Find the range (high - low) — need some movement
+        3. Current price must be in the bottom PATTERN_DIP_THRESHOLD of that range
+        4. Price must be bouncing (at least 1 consecutive up-tick)
+        5. Recent trend shows the stock oscillates (not just free-falling)
+        Returns True if this looks like a good dip buy.
+        """
+        # Gather prices in the analysis window
+        cutoff = now - PATTERN_WINDOW_SEC
+        window = [(t, p) for t, p in self.price_history if t >= cutoff]
+
+        if len(window) < 10:
+            self.pattern_reason = f"Collecting data ({len(window)}/10 ticks)..."
+            self.pattern_confidence = 0.0
+            return False
+
+        prices = [p for _, p in window]
+        hi = max(prices)
+        lo = min(prices)
+        rng = hi - lo
+
+        # Need at least $0.03 of movement to detect a pattern
+        if rng < 0.03:
+            self.pattern_reason = f"Range too flat (${rng:.2f})"
+            self.pattern_confidence = 0.0
+            return False
+
+        # Where is current price in the range? 0.0 = at low, 1.0 = at high
+        position_in_range = (price - lo) / rng
+
+        # Must be in the bottom portion (dip zone)
+        if position_in_range > PATTERN_DIP_THRESHOLD:
+            self.pattern_reason = f"Price too high in range ({position_in_range:.0%})"
+            self.pattern_confidence = round(1.0 - position_in_range, 2)
+            return False
+
+        # Must be bouncing — at least 1 up-tick (reversal starting)
+        if self.consecutive_up < 1:
+            self.pattern_reason = "At dip but no bounce yet..."
+            self.pattern_confidence = round(1.0 - position_in_range, 2)
+            return False
+
+        # Check it's not a freefall: split window in half, first half should have
+        # had a higher price (i.e. price came down then bounced)
+        mid = len(prices) // 2
+        first_half_avg = sum(prices[:mid]) / mid
+        second_half_avg = sum(prices[mid:]) / len(prices[mid:])
+
+        # If second half avg is MUCH lower, it's a freefall not a dip
+        if second_half_avg < first_half_avg * 0.998:
+            # Prices still trending down hard
+            self.pattern_reason = "Downtrend — waiting for bottom"
+            self.pattern_confidence = round(1.0 - position_in_range, 2)
+            return False
+
+        # All checks passed — this is a dip buy
+        self.pattern_confidence = round(1.0 - position_in_range, 2)
+        self.pattern_reason = f"Dip detected at ${price:.2f} (range ${lo:.2f}-${hi:.2f})"
+        return True
+
     def _calculate_slippage(self) -> float:
         if random.random() < SLIPPAGE_SPIKE_CHANCE:
             return random.uniform(SLIPPAGE_BASE_MAX, SLIPPAGE_SPIKE_MAX)
@@ -233,32 +301,22 @@ class TradingBot:
                 self._transition(BotState.WATCHING, now)
 
         elif self.state == BotState.WATCHING:
-            if self.ai_enabled:
-                watching_time = now - self.state_entered_at
-                if self.ai_recommendation == "BUY" and self.cash > 100:
-                    # AI says buy — go
-                    print(f"[Bot] AI says BUY, entering! cash=${self.cash:.2f}, price=${price:.2f}")
-                    self.intent_price = price
-                    self.exec_delay = random.uniform(EXEC_DELAY_MIN, EXEC_DELAY_MAX)
-                    self._transition(BotState.ENTERING, now)
-                elif watching_time >= 45 and self.cash > 100:
-                    # Failsafe: been waiting 45s+ without a BUY — just enter
-                    print(f"[Bot] WATCHING timeout ({watching_time:.0f}s), forcing entry at ${price:.2f}, cash=${self.cash:.2f}")
-                    self.intent_price = price
-                    self.exec_delay = random.uniform(EXEC_DELAY_MIN, EXEC_DELAY_MAX)
-                    self._transition(BotState.ENTERING, now)
-            elif (self.engine.action == "BUY"
-                    and self.engine.signal_score >= BUY_THRESHOLD
-                    and self.cash > 100):
-                # Original signal-based entry with all smart filters
-                if not self._check_trend():
-                    return
-                if not self._check_momentum(price):
-                    return
-                if not self._check_reversal():
-                    return
-                if not self._check_volume_exhaustion():
-                    return
+            watching_time = now - self.state_entered_at
+            self.pattern_status = "SCAN"
+
+            # Need minimum observation time before first entry
+            if watching_time < PATTERN_WATCH_SEC:
+                self.pattern_reason = f"Scanning... ({watching_time:.0f}/{PATTERN_WATCH_SEC}s)"
+                return
+
+            if self.cash <= 100:
+                self.pattern_reason = "Insufficient cash"
+                return
+
+            # Pattern detection: look for a dip buy opportunity
+            if self._check_pattern_entry(price, now):
+                print(f"[Bot] PATTERN BUY: {self.pattern_reason}, price=${price:.2f}")
+                self.pattern_status = "BUY"
                 self.intent_price = price
                 self.exec_delay = random.uniform(EXEC_DELAY_MIN, EXEC_DELAY_MAX)
                 self._transition(BotState.ENTERING, now)
@@ -273,31 +331,15 @@ class TradingBot:
                 self._transition(BotState.WATCHING, now)
                 return
             hold_time = now - self.position_entry_time
-            pnl_pct = ((price - self.position_entry_price) / self.position_entry_price) * 100
             dollar_pnl = (price - self.position_entry_price) * self.position_shares
 
             exit_reason = None
-            if self.ai_enabled:
-                # AI-driven exit: dollar-based targets
-                if dollar_pnl >= AI_TAKE_PROFIT_DOLLARS:
-                    exit_reason = "AI_PROFIT"
-                elif dollar_pnl <= AI_STOP_LOSS_DOLLARS:
-                    exit_reason = "STOP_LOSS"
-                elif hold_time >= AI_MAX_HOLD_SECONDS:
-                    exit_reason = "TIME_LIMIT"
-                elif self.ai_recommendation == "SELL":
-                    exit_reason = "AI_SELL"
-            else:
-                # Original percentage-based exit
-                if pnl_pct >= TAKE_PROFIT_PCT:
-                    exit_reason = "TAKE_PROFIT"
-                elif pnl_pct <= STOP_LOSS_PCT:
-                    exit_reason = "STOP_LOSS"
-                elif hold_time >= MAX_HOLD_SECONDS:
-                    exit_reason = "TIME_LIMIT"
-                elif (self.engine.action == "SELL"
-                      and self.engine.signal_score >= SELL_SIGNAL_THRESHOLD):
-                    exit_reason = "SELL_SIGNAL"
+            if dollar_pnl >= TAKE_PROFIT_DOLLARS:
+                exit_reason = "PROFIT"
+            elif dollar_pnl <= STOP_LOSS_DOLLARS:
+                exit_reason = "STOP_LOSS"
+            elif hold_time >= PAT_MAX_HOLD_SECONDS:
+                exit_reason = "TIME_LIMIT"
 
             if exit_reason:
                 self.exit_reason = exit_reason
@@ -307,8 +349,8 @@ class TradingBot:
         elif self.state == BotState.EXITING:
             if elapsed >= self.exec_delay:
                 self._execute_sell(price, now)
-                # Reset AI recommendation so stale SELL doesn't block next BUY
-                self.ai_recommendation = "HOLD"
+                self.pattern_status = "WAIT"
+                self.pattern_reason = "Cooling down..."
                 self._transition(BotState.COOLING_DOWN, now)
 
         elif self.state == BotState.COOLING_DOWN:
@@ -425,10 +467,10 @@ class TradingBot:
             "trend": trend,
             "ema_fast": round(self.ema_fast, 4),
             "ema_slow": round(self.ema_slow, 4),
-            "ai_enabled": self.ai_enabled,
-            "ai_recommendation": self.ai_recommendation,
-            "ai_reason": self.ai_reason,
-            "ai_confidence": round(self.ai_confidence, 2),
+            "ai_enabled": True,
+            "ai_recommendation": self.pattern_status,
+            "ai_reason": self.pattern_reason,
+            "ai_confidence": round(self.pattern_confidence, 2),
         }
 
     def get_all_trades(self) -> list:
@@ -465,7 +507,7 @@ class TradingBot:
         self.consecutive_up = 0
         self.price_history.clear()
         self.volume_history.clear()
-        # Reset AI state
-        self.ai_recommendation = "HOLD"
-        self.ai_reason = "Waiting for AI..."
-        self.ai_confidence = 0.0
+        # Reset pattern state
+        self.pattern_status = "WAIT"
+        self.pattern_reason = "Warming up..."
+        self.pattern_confidence = 0.0

@@ -307,37 +307,30 @@
     }
   }
 
-  // ---- AI Brain ----
+  // ---- Bot Brain (pattern detection) ----
   function renderAI(s) {
     if (!aiCard) return;
-    const enabled = s.ai_enabled;
-    if (!enabled) { aiCard.style.display = "none"; return; }
     aiCard.style.display = "";
-    const rec = s.ai_recommendation || "HOLD";
-    const reason = s.ai_reason || "Waiting...";
+    const rec = s.ai_recommendation || "WAIT";
+    const reason = s.ai_reason || "Warming up...";
     const confidence = s.ai_confidence || 0;
-    const lastScan = s.ai_last_scan || 0;
-    const scanCount = s.ai_scan_count || 0;
 
-    aiCard.className = "ai-card" + (scanCount > 0 ? " active" : "");
+    aiCard.className = "ai-card active";
 
-    if (scanCount === 0) {
-      aiBadge.textContent = "SCANNING";
+    // Map pattern status to badge
+    if (rec === "SCAN") {
+      aiBadge.textContent = "SCAN";
       aiBadge.className = "ai-badge scanning";
+    } else if (rec === "BUY") {
+      aiBadge.textContent = "BUY";
+      aiBadge.className = "ai-badge buy";
     } else {
-      aiBadge.textContent = rec;
-      aiBadge.className = "ai-badge " + rec.toLowerCase();
+      aiBadge.textContent = "WAIT";
+      aiBadge.className = "ai-badge hold";
     }
 
     aiConf.textContent = Math.round(confidence * 100) + "%";
-
-    if (lastScan > 0) {
-      const ago = Math.round(Date.now() / 1000 - lastScan);
-      aiTimer.textContent = ago < 60 ? ago + "s ago" : Math.floor(ago / 60) + "m ago";
-    } else {
-      aiTimer.textContent = "waiting...";
-    }
-
+    aiTimer.textContent = "";
     aiReason.textContent = reason;
   }
 

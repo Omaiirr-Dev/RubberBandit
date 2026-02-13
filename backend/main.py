@@ -18,7 +18,6 @@ from dotenv import load_dotenv
 
 from backend.engine import TradingEngine, DayTracker
 from backend.bot import TradingBot
-from backend.ai_brain import AIBrain
 
 load_dotenv()
 
@@ -28,7 +27,6 @@ TICKER = os.getenv("TICKER", "NVDA")
 SPREAD = float(os.getenv("SPREAD", "0.02"))
 POSITION_SIZE = float(os.getenv("POSITION_SIZE", "10000"))
 PORT = int(os.getenv("PORT", "8000"))
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 engine = TradingEngine()
 engine.spread = SPREAD
@@ -48,10 +46,6 @@ bot = TradingBot()                  # live bot (fed by Alpaca ticks)
 demo_bot = TradingBot(demo=True)    # demo bot (fed by fake ticks 24/7)
 bot_clients: set[WebSocket] = set()
 demo_bot_task = None
-
-# ---- AI Brain ----
-ai_brain = None
-ai_brain_demo = None
 
 
 async def broadcast(data: dict):
@@ -74,10 +68,6 @@ async def broadcast_bot():
         return
     live_state = bot.get_state()
     demo_state = demo_bot.get_state()
-    if ai_brain:
-        live_state.update(ai_brain.get_state())
-    if ai_brain_demo:
-        demo_state.update(ai_brain_demo.get_state())
     msg = json.dumps({
         "type": "bot_update",
         "live": live_state,
@@ -160,93 +150,13 @@ async def demo_bot_feed():
         await asyncio.sleep(1)
 
 
-async def ai_scan_loop(target_bot: TradingBot, brain: AIBrain, interval: int = 60):
-    """Background loop: calls AI every `interval` seconds, stores recommendation in bot."""
-    if brain.first_scan_time == 0:
-        brain.first_scan_time = time.time()
-    consecutive_holds = 0
-    while True:
-        await asyncio.sleep(interval)
-        try:
-            now = time.time()
-            minutes_scanning = (now - brain.first_scan_time) / 60.0
-
-            # Get last 30 min of prices from day_tracker
-            cutoff_ms = int((now - 1800) * 1000)
-            recent = [(ts_ms, p) for ts_ms, p in target_bot.day_tracker.prices if ts_ms >= cutoff_ms]
-
-            if not recent:
-                print(f"[AI] No recent price data, skipping scan")
-                continue
-
-            # Downsample to ~30 points
-            if len(recent) > 30:
-                step = len(recent) // 30
-                recent = recent[::step][:30]
-
-            prices_30min = []
-            for ts_ms, p in recent:
-                dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
-                prices_30min.append((dt.strftime("%H:%M:%S"), p))
-
-            s = target_bot.get_state()
-            chart_data = {
-                "prices_30min": prices_30min,
-                "current_price": s["price"],
-                "support_floor": s["support_floor"],
-                "resistance_ceiling": s["resistance_ceiling"],
-                "vwap": s["vwap"],
-                "ema_fast": s["ema_fast"],
-                "ema_slow": s["ema_slow"],
-                "trend": s["trend"],
-                "in_position": s["in_position"],
-                "entry_price": s["position_entry_price"] if s["in_position"] else None,
-                "unrealized_pnl": s["unrealized_pnl"],
-                "position_value": s["position_shares"] * s["price"] if s["in_position"] else 0,
-                "cash": s["cash"],
-                "minutes_scanning": minutes_scanning,
-            }
-
-            result = await brain.analyze(chart_data)
-            action = result["action"]
-            reason = result["reason"]
-
-            # Force BUY if AI keeps NOT recommending BUY while we're not in a position
-            if not s["in_position"] and action != "BUY":
-                consecutive_holds += 1
-                if consecutive_holds >= 2 and minutes_scanning >= 1.0:
-                    old_action = action
-                    action = "BUY"
-                    reason = f"Forced BUY: AI said {old_action} x{consecutive_holds}, overriding"
-                    print(f"[AI] Force-BUY: AI said {old_action} {consecutive_holds} times while not in position")
-                    consecutive_holds = 0
-            else:
-                consecutive_holds = 0
-
-            target_bot.ai_recommendation = action
-            target_bot.ai_reason = reason
-            target_bot.ai_confidence = result["confidence"]
-
-            label = "DEMO" if target_bot.demo else "LIVE"
-            print(f"[AI {label}] {action} — {reason} (conf: {result['confidence']:.0%}) [state: {s['bot_status']}, cash: ${s['cash']:.2f}, holds: {consecutive_holds}]")
-
-        except Exception as e:
-            print(f"[AI] Scan error: {e}")
-            import traceback
-            traceback.print_exc()
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global alpaca_task, demo_bot_task, ai_brain, ai_brain_demo
-    ai_live_task = None
-    ai_demo_task = None
+    global alpaca_task, demo_bot_task
 
     # Always start demo bot feed
     demo_bot_task = asyncio.create_task(demo_bot_feed())
     print("[Bot] Demo bot started (fake ticks 24/7)")
-
-    # Demo bot uses original signal-based trading (no AI, no API cost)
 
     if ALPACA_API_KEY and ALPACA_API_KEY != "your_alpaca_api_key_here":
         try:
@@ -257,14 +167,7 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"[DayTracker] Backfill failed: {e}")
         alpaca_task = asyncio.create_task(connect_alpaca())
-        print(f"[RubberBand] Streaming {TICKER} from Alpaca")
-
-        # Start AI brain for live bot
-        if OPENAI_API_KEY:
-            ai_brain = AIBrain(OPENAI_API_KEY)
-            bot.ai_enabled = True
-            ai_live_task = asyncio.create_task(ai_scan_loop(bot, ai_brain, interval=20))
-            print("[AI] Live bot AI brain started (scanning every 20s)")
+        print(f"[RubberBand] Streaming {TICKER} from Alpaca (pattern detection active)")
     else:
         print("[RubberBand] No Alpaca API key set — use DEMO button")
     yield
@@ -272,10 +175,6 @@ async def lifespan(app: FastAPI):
         alpaca_task.cancel()
     if demo_bot_task:
         demo_bot_task.cancel()
-    if ai_live_task:
-        ai_live_task.cancel()
-    if ai_demo_task:
-        ai_demo_task.cancel()
     for entry in demo_clients.values():
         entry["task"].cancel()
 
@@ -557,10 +456,10 @@ async def bot_page():
 async def debug_state():
     """Debug endpoint: returns full bot state as JSON."""
     live = bot.get_state()
-    live["_code_version"] = "790998a"  # our latest commit hash
-    live["_ai_enabled"] = bot.ai_enabled
-    live["_ai_recommendation"] = bot.ai_recommendation
+    live["_code_version"] = "pattern-v1"
+    live["_mode"] = "pattern_detection"
+    live["_pattern_status"] = bot.pattern_status
+    live["_pattern_reason"] = bot.pattern_reason
     live["_state"] = bot.state.value
     live["_cash"] = bot.cash
-    live["_has_ai_brain"] = ai_brain is not None
     return live
