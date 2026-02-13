@@ -627,6 +627,7 @@
         TIME_LIMIT: ["TL", "tl"],
         SELL_SIGNAL: ["SS", "ss"],
         EMA_CROSS: ["EC", "tp"],
+        INDICATOR_EXIT: ["IE", "tp"],
         AI_PROFIT: ["AI$", "tp"],
         AI_SELL: ["AI", "ss"],
       };

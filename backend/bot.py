@@ -51,6 +51,37 @@ PATTERN_MIN_BELOW_EMA = 0.05     # $0.05 below EMA — catch small dips (NVDA is
 PATTERN_UPTICKS = 2              # 2 consecutive up-ticks (fast confirmation)
 PATTERN_MIN_HOLD_EXIT = 15       # hold 15s before allowing EMA exit
 
+# ---- Multi-Signal Indicator Constants ----
+
+# RSI (Wilder's smoothed, 14-period on tick deltas)
+RSI_PERIOD = 14
+RSI_OVERSOLD = 35                # loosened from 30 — tick RSI is volatile
+RSI_OVERBOUGHT = 65              # exit signal
+
+# Bollinger Bands (20-period SMA +/- 2 std devs)
+BB_PERIOD = 20
+BB_STD_MULT = 2.0
+
+# MACD (12/26/9 tick-based EMAs)
+MACD_FAST = 12
+MACD_SLOW = 26
+MACD_SIGNAL = 9
+
+# Fibonacci retracement levels
+FIB_BUY_LEVELS = (0.618, 0.786)
+FIB_TOLERANCE = 0.003            # +/- 0.3% of price
+FIB_SWING_WINDOW_SEC = 90        # swing high/low lookback
+
+# Multi-signal scoring
+ENTRY_SCORE_THRESHOLD = 3        # need 3/7 points to enter
+EXIT_INDICATOR_SCORE = 2         # 2+ bearish signals = exit when profitable
+SCORE_RSI_OVERSOLD = 1
+SCORE_BB_LOWER = 2               # strongest: statistical extreme
+SCORE_MACD_BULL = 1
+SCORE_VWAP_BELOW = 1
+SCORE_FIB_LEVEL = 1
+SCORE_EMA_DIP = 1
+
 # ---- Smart Filter Parameters ----
 
 # Trend filter: EMA crossover
@@ -135,6 +166,31 @@ class TradingBot:
         self.pattern_confidence = 0.0
         self.pattern_ema = 0.0          # slow EMA for mean-reversion
 
+        # ---- Multi-indicator state ----
+        # RSI
+        self.rsi_gains = deque(maxlen=RSI_PERIOD)
+        self.rsi_losses = deque(maxlen=RSI_PERIOD)
+        self.rsi_avg_gain = 0.0
+        self.rsi_avg_loss = 0.0
+        self.rsi_value = 50.0
+        self.rsi_ready = False
+        # Bollinger Bands
+        self.bb_upper = 0.0
+        self.bb_lower = 0.0
+        self.bb_mid = 0.0
+        self.bb_ready = False
+        # MACD
+        self.macd_ema_fast = 0.0
+        self.macd_ema_slow = 0.0
+        self.macd_signal_ema = 0.0
+        self.macd_line = 0.0
+        self.macd_histogram = 0.0
+        self.macd_tick_count = 0
+        self.macd_ready = False
+        # Scoring snapshot
+        self.last_signal_score = 0
+        self.last_signal_parts = {}
+
     def add_tick(self, price: float, volume: float = 1.0, timestamp: float = None):
         now = timestamp or time.time()
 
@@ -152,6 +208,11 @@ class TradingBot:
         self._update_reversal(price)
         self._update_momentum(price, now)
         self._update_volume(volume)
+
+        # Update multi-signal indicators
+        self._update_rsi(price)
+        self._update_bollinger()
+        self._update_macd(price)
 
         self._run_state_machine(price, now)
 
@@ -185,8 +246,8 @@ class TradingBot:
     def _update_momentum(self, price: float, now: float):
         """Track recent prices for pattern detection & momentum."""
         self.price_history.append((now, price))
-        # Keep enough for pattern window + buffer
-        cutoff = now - max(MOMENTUM_WINDOW_SEC, PATTERN_WINDOW_SEC + 10)
+        # Keep enough for all windows (momentum, pattern, fibonacci)
+        cutoff = now - max(MOMENTUM_WINDOW_SEC, FIB_SWING_WINDOW_SEC + 10)
         while self.price_history and self.price_history[0][0] < cutoff:
             self.price_history.popleft()
         # Update slow pattern EMA
@@ -198,6 +259,81 @@ class TradingBot:
     def _update_volume(self, volume: float):
         """Track recent volumes for exhaustion check."""
         self.volume_history.append(volume)
+
+    # ---- Indicator updates ----
+
+    def _update_rsi(self, price: float):
+        """Wilder's smoothed RSI on tick-level price changes."""
+        if self.prev_price <= 0:
+            return
+        delta = price - self.prev_price
+        gain = delta if delta > 0 else 0.0
+        loss = abs(delta) if delta < 0 else 0.0
+
+        if not self.rsi_ready:
+            self.rsi_gains.append(gain)
+            self.rsi_losses.append(loss)
+            if len(self.rsi_gains) == RSI_PERIOD:
+                self.rsi_avg_gain = sum(self.rsi_gains) / RSI_PERIOD
+                self.rsi_avg_loss = sum(self.rsi_losses) / RSI_PERIOD
+                self.rsi_ready = True
+        else:
+            k = 1.0 / RSI_PERIOD
+            self.rsi_avg_gain = self.rsi_avg_gain * (1 - k) + gain * k
+            self.rsi_avg_loss = self.rsi_avg_loss * (1 - k) + loss * k
+
+        if self.rsi_ready:
+            if self.rsi_avg_loss == 0:
+                self.rsi_value = 100.0
+            else:
+                rs = self.rsi_avg_gain / self.rsi_avg_loss
+                self.rsi_value = 100.0 - (100.0 / (1.0 + rs))
+
+    def _update_bollinger(self):
+        """20-period Bollinger Bands from recent price_history."""
+        if len(self.price_history) < BB_PERIOD:
+            self.bb_ready = False
+            return
+        recent = [p for _, p in list(self.price_history)[-BB_PERIOD:]]
+        n = len(recent)
+        if n < BB_PERIOD:
+            self.bb_ready = False
+            return
+        mean = sum(recent) / n
+        variance = sum((p - mean) ** 2 for p in recent) / n
+        std = variance ** 0.5
+        self.bb_mid = mean
+        self.bb_upper = mean + BB_STD_MULT * std
+        self.bb_lower = mean - BB_STD_MULT * std
+        self.bb_ready = True
+
+    def _update_macd(self, price: float):
+        """Tick-level MACD: 12/26 EMA crossover with 9-period signal line."""
+        self.macd_tick_count += 1
+        k_fast = 2.0 / (MACD_FAST + 1)
+        k_slow = 2.0 / (MACD_SLOW + 1)
+        k_sig = 2.0 / (MACD_SIGNAL + 1)
+
+        if self.macd_tick_count == 1:
+            self.macd_ema_fast = price
+            self.macd_ema_slow = price
+            return
+
+        self.macd_ema_fast = price * k_fast + self.macd_ema_fast * (1 - k_fast)
+        self.macd_ema_slow = price * k_slow + self.macd_ema_slow * (1 - k_slow)
+
+        if self.macd_tick_count < MACD_SLOW:
+            return
+
+        self.macd_line = self.macd_ema_fast - self.macd_ema_slow
+
+        if not self.macd_ready:
+            self.macd_signal_ema = self.macd_line
+            self.macd_ready = True
+            return
+
+        self.macd_signal_ema = self.macd_line * k_sig + self.macd_signal_ema * (1 - k_sig)
+        self.macd_histogram = self.macd_line - self.macd_signal_ema
 
     # ---- Smart filter checks ----
 
@@ -234,59 +370,110 @@ class TradingBot:
         # Recent volume should be lower than prior (exhaustion)
         return avg_recent <= avg_prior * 1.5  # 50% tolerance — more permissive for scalping
 
-    # ---- Pattern detection entry ----
+    # ---- Multi-signal entry ----
 
-    def _check_pattern_entry(self, price: float, now: float) -> bool:
+    def _check_multi_signal_entry(self, price: float, now: float) -> bool:
         """
-        Mean-reversion dip detector (simulation-optimized).
-        1. Price must be below the slow EMA by at least PATTERN_MIN_BELOW_EMA
-        2. Price must be in the bottom PATTERN_DIP_THRESHOLD of recent range
-        3. Must have PATTERN_UPTICKS consecutive up-ticks (confirmed bounce)
+        Multi-indicator entry scoring (RSI + Bollinger + MACD + VWAP + Fib + EMA).
+        Max 7 points. Requires ENTRY_SCORE_THRESHOLD (3) to enter.
+        Hard gate: must have PATTERN_UPTICKS consecutive upticks.
         """
-        # EMA filter: only buy when price is significantly below "normal"
-        ema_gap = self.pattern_ema - price
-        if ema_gap < PATTERN_MIN_BELOW_EMA:
-            self.pattern_reason = f"Waiting for dip (${ema_gap:.2f} below EMA, need ${PATTERN_MIN_BELOW_EMA:.2f})"
-            self.pattern_confidence = round(min(ema_gap / PATTERN_MIN_BELOW_EMA, 1.0), 2) if PATTERN_MIN_BELOW_EMA > 0 else 0
-            return False
-
-        # Gather prices in the analysis window
+        # Need minimum price history
         cutoff = now - PATTERN_WINDOW_SEC
         window = [(t, p) for t, p in self.price_history if t >= cutoff]
-
         if len(window) < 10:
             self.pattern_reason = f"Collecting data ({len(window)}/10 ticks)..."
             self.pattern_confidence = 0.0
             return False
 
-        prices = [p for _, p in window]
-        hi = max(prices)
-        lo = min(prices)
-        rng = hi - lo
+        score = 0
+        parts = {}
 
-        if rng < 0.03:
-            self.pattern_reason = f"Range too flat (${rng:.2f})"
-            self.pattern_confidence = 0.0
-            return False
+        # Signal 1: RSI oversold (+1)
+        if self.rsi_ready and self.rsi_value < RSI_OVERSOLD:
+            score += SCORE_RSI_OVERSOLD
+            parts["RSI"] = round(self.rsi_value, 0)
 
-        # Where is current price in the range?
-        position_in_range = (price - lo) / rng
+        # Signal 2: Bollinger lower band (+2)
+        if self.bb_ready and price <= self.bb_lower:
+            score += SCORE_BB_LOWER
+            parts["BB"] = round(self.bb_lower, 2)
 
-        if position_in_range > PATTERN_DIP_THRESHOLD:
-            self.pattern_reason = f"Price too high in range ({position_in_range:.0%})"
-            self.pattern_confidence = round(1.0 - position_in_range, 2)
-            return False
+        # Signal 3: MACD bullish histogram (+1)
+        if self.macd_ready and self.macd_histogram > 0:
+            score += SCORE_MACD_BULL
+            parts["MACD"] = round(self.macd_histogram, 4)
 
-        # Must have strong bounce confirmation
+        # Signal 4: Below VWAP (+1)
+        vwap = self.engine.vwap
+        if vwap > 0 and price < vwap:
+            score += SCORE_VWAP_BELOW
+            parts["VWAP"] = round(vwap, 2)
+
+        # Signal 5: Fibonacci retracement level (+1)
+        fib_window = [(t, p) for t, p in self.price_history
+                      if t >= now - FIB_SWING_WINDOW_SEC]
+        if len(fib_window) >= 10:
+            fib_prices = [p for _, p in fib_window]
+            swing_high = max(fib_prices)
+            swing_low = min(fib_prices)
+            swing_range = swing_high - swing_low
+            if swing_range > 0.10:
+                for level in FIB_BUY_LEVELS:
+                    fib_price = swing_low + (1.0 - level) * swing_range
+                    if abs(price - fib_price) <= FIB_TOLERANCE * price:
+                        score += SCORE_FIB_LEVEL
+                        parts["FIB"] = round(fib_price, 2)
+                        break
+
+        # Signal 6: EMA dip (+1)
+        ema_gap = self.pattern_ema - price
+        if self.pattern_ema > 0 and ema_gap >= PATTERN_MIN_BELOW_EMA:
+            score += SCORE_EMA_DIP
+            parts["EMA"] = round(ema_gap, 3)
+
+        self.last_signal_score = score
+        self.last_signal_parts = parts
+
+        # Hard gate: uptick confirmation (prevents buying freefalls)
         if self.consecutive_up < PATTERN_UPTICKS:
-            self.pattern_reason = f"Bounce: {self.consecutive_up}/{PATTERN_UPTICKS} upticks"
-            self.pattern_confidence = round(1.0 - position_in_range, 2)
+            signals = ','.join(parts.keys()) if parts else 'none'
+            self.pattern_reason = (
+                f"Score {score}/{ENTRY_SCORE_THRESHOLD} [{signals}] "
+                f"upticks {self.consecutive_up}/{PATTERN_UPTICKS}"
+            )
+            self.pattern_confidence = round(score / 7.0, 2)
             return False
 
-        # All checks passed
-        self.pattern_confidence = round(1.0 - position_in_range, 2)
-        self.pattern_reason = f"Dip buy! ${ema_gap:.2f} below EMA, {self.consecutive_up} upticks"
+        # Score threshold
+        if score < ENTRY_SCORE_THRESHOLD:
+            signals = ','.join(parts.keys()) if parts else 'none'
+            self.pattern_reason = (
+                f"Score {score}/{ENTRY_SCORE_THRESHOLD} [{signals}] "
+                f"RSI={self.rsi_value:.0f}"
+            )
+            self.pattern_confidence = round(score / 7.0, 2)
+            return False
+
+        # All gates passed
+        signals = ', '.join(f"{k}={v}" for k, v in parts.items())
+        self.pattern_reason = f"ENTRY {score}/7 [{signals}]"
+        self.pattern_confidence = round(score / 7.0, 2)
         return True
+
+    def _check_indicator_exit(self, price: float) -> int:
+        """Count bearish exit signals. 2+ triggers exit when profitable."""
+        exit_score = 0
+        if self.rsi_ready and self.rsi_value > RSI_OVERBOUGHT:
+            exit_score += 1
+        if self.bb_ready and price >= self.bb_upper:
+            exit_score += 1
+        vwap = self.engine.vwap
+        if vwap > 0 and price > vwap:
+            exit_score += 1
+        if self.macd_ready and self.macd_histogram < 0:
+            exit_score += 1
+        return exit_score
 
     def _calculate_slippage(self) -> float:
         if random.random() < SLIPPAGE_SPIKE_CHANCE:
@@ -313,9 +500,9 @@ class TradingBot:
                 self.pattern_reason = "Insufficient cash"
                 return
 
-            # Pattern detection: look for a dip buy opportunity
-            if self._check_pattern_entry(price, now):
-                print(f"[Bot] PATTERN BUY: {self.pattern_reason}, price=${price:.2f}")
+            # Multi-signal entry: RSI + Bollinger + MACD + VWAP + Fib + EMA
+            if self._check_multi_signal_entry(price, now):
+                print(f"[Bot] SIGNAL BUY: {self.pattern_reason}, price=${price:.2f}")
                 self.pattern_status = "BUY"
                 self._execute_buy(price, now)
                 self._transition(BotState.IN_POSITION, now)
@@ -344,7 +531,12 @@ class TradingBot:
                     and dollar_pnl > 0):
                 exit_reason = "EMA_CROSS"
 
-            # Hard stop loss
+            # Indicator-based exit: 2+ bearish signals while profitable
+            elif hold_time >= PATTERN_MIN_HOLD_EXIT and dollar_pnl > 0:
+                if self._check_indicator_exit(price) >= EXIT_INDICATOR_SCORE:
+                    exit_reason = "INDICATOR_EXIT"
+
+            # Hard stop loss (always overrides)
             if dollar_pnl <= STOP_LOSS_DOLLARS:
                 exit_reason = "STOP_LOSS"
             # Time limit
@@ -482,6 +674,14 @@ class TradingBot:
             "ai_recommendation": self.pattern_status,
             "ai_reason": self.pattern_reason,
             "ai_confidence": round(self.pattern_confidence, 2),
+            "rsi": round(self.rsi_value, 1),
+            "bb_upper": round(self.bb_upper, 4),
+            "bb_lower": round(self.bb_lower, 4),
+            "bb_mid": round(self.bb_mid, 4),
+            "macd_line": round(self.macd_line, 4),
+            "macd_signal": round(self.macd_signal_ema, 4),
+            "macd_histogram": round(self.macd_histogram, 4),
+            "multi_score": self.last_signal_score,
         }
 
     def get_all_trades(self) -> list:
@@ -524,3 +724,23 @@ class TradingBot:
         self.pattern_reason = "Warming up..."
         self.pattern_confidence = 0.0
         self.pattern_ema = 0.0
+        # Reset multi-indicator state
+        self.rsi_gains.clear()
+        self.rsi_losses.clear()
+        self.rsi_avg_gain = 0.0
+        self.rsi_avg_loss = 0.0
+        self.rsi_value = 50.0
+        self.rsi_ready = False
+        self.bb_upper = 0.0
+        self.bb_lower = 0.0
+        self.bb_mid = 0.0
+        self.bb_ready = False
+        self.macd_ema_fast = 0.0
+        self.macd_ema_slow = 0.0
+        self.macd_signal_ema = 0.0
+        self.macd_line = 0.0
+        self.macd_histogram = 0.0
+        self.macd_tick_count = 0
+        self.macd_ready = False
+        self.last_signal_score = 0
+        self.last_signal_parts = {}
