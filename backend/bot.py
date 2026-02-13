@@ -40,7 +40,8 @@ SLIPPAGE_SPIKE_MAX = 0.005   # unused with 0% spike chance
 SPREAD_PER_SHARE = 0.01      # tight spread for liquid stocks
 
 # ---- Pattern-based mean-reversion scalping (optimized on 5 days real NVDA data) ----
-STOP_LOSS_DOLLARS = -20.00       # wide stop — survive noise, let trades breathe
+STOP_LOSS_DOLLARS = -5.00        # tight stop — cut losers fast at $5
+TAKE_PROFIT_DOLLARS = 5.00       # take profit at $3-6 range (target $5)
 PAT_MAX_HOLD_SECONDS = 60        # 60s max hold — quick in/out scalps
 PATTERN_WATCH_SEC = 8            # 8s scan before first entry
 PATTERN_WINDOW_SEC = 45          # 45s analysis window (tighter = more responsive)
@@ -333,8 +334,12 @@ class TradingBot:
 
             exit_reason = None
 
-            # EMA crossover exit: price reverted back to mean = take profit
-            if (price >= self.pattern_ema
+            # Hard take profit — lock in gains
+            if dollar_pnl >= TAKE_PROFIT_DOLLARS:
+                exit_reason = "TAKE_PROFIT"
+
+            # EMA crossover exit: price reverted back to mean
+            elif (price >= self.pattern_ema
                     and hold_time >= PATTERN_MIN_HOLD_EXIT
                     and dollar_pnl > 0):
                 exit_reason = "EMA_CROSS"
@@ -343,7 +348,7 @@ class TradingBot:
             if dollar_pnl <= STOP_LOSS_DOLLARS:
                 exit_reason = "STOP_LOSS"
             # Time limit
-            elif hold_time >= PAT_MAX_HOLD_SECONDS:
+            elif hold_time >= PAT_MAX_HOLD_SECONDS and exit_reason is None:
                 exit_reason = "TIME_LIMIT"
 
             if exit_reason:
