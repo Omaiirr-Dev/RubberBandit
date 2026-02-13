@@ -17,8 +17,8 @@ from backend.engine import TradingEngine, DayTracker
 
 STARTING_CASH = 10_000.00
 
-WARMUP_SECONDS = 60          # 1 minute (live) — backfill provides history
-WARMUP_SECONDS_DEMO = 45    # 45 seconds (demo)
+WARMUP_SECONDS = 45          # 45 seconds (live) — backfill provides history
+WARMUP_SECONDS_DEMO = 30    # 30 seconds (demo) — get trading fast
 
 BUY_THRESHOLD = 72           # catch more dips (engine's base is 70)
 SELL_SIGNAL_THRESHOLD = 72
@@ -27,25 +27,28 @@ TAKE_PROFIT_PCT = 0.10       # +0.10% — micro scalps (~$5 net per win)
 STOP_LOSS_PCT = -0.12        # -0.12% — tight stop, cut losers fast
 MAX_HOLD_SECONDS = 180       # 3 minutes — true scalp, in and out
 
-COOLDOWN_SECONDS = 5         # 5 seconds — quick reset, catch next wave
+COOLDOWN_SECONDS = 3         # 3 seconds — barely pause, catch next wave
 
-EXEC_DELAY_MIN = 0.3         # seconds — fast limit-order style
-EXEC_DELAY_MAX = 1.0
+EXEC_DELAY_MIN = 0.1         # seconds — near-instant limit fill
+EXEC_DELAY_MAX = 0.3
 
 SLIPPAGE_BASE_MIN = 0.00
-SLIPPAGE_BASE_MAX = 0.02     # 0-2 cents (scalpers use limit orders)
-SLIPPAGE_SPIKE_CHANCE = 0.05 # 5% chance of bad fill
-SLIPPAGE_SPIKE_MAX = 0.06    # max 6 cents on bad fill
+SLIPPAGE_BASE_MAX = 0.005    # 0-0.5 cent (tight limit orders)
+SLIPPAGE_SPIKE_CHANCE = 0.0  # no spikes (limit orders protect us)
+SLIPPAGE_SPIKE_MAX = 0.005   # unused with 0% spike chance
 
-SPREAD_PER_SHARE = 0.02
+SPREAD_PER_SHARE = 0.01      # tight spread for liquid stocks
 
-# ---- Pattern-based scalping targets ----
-TAKE_PROFIT_DOLLARS = 1.50       # grab $1.50 and run (frequent small wins)
-STOP_LOSS_DOLLARS = -4.00        # cut at -$4
-PAT_MAX_HOLD_SECONDS = 90        # 90s max — if it hasn't moved, get out
-PATTERN_WATCH_SEC = 10           # 10s scan — react fast to dips
-PATTERN_WINDOW_SEC = 15          # analyze last 15s of prices (recent action)
-PATTERN_DIP_THRESHOLD = 0.40     # buy in bottom 40% of range (wider net)
+# ---- Pattern-based mean-reversion scalping ----
+STOP_LOSS_DOLLARS = -15.00       # wide stop — survive noise, let trades breathe
+PAT_MAX_HOLD_SECONDS = 240       # 4 min max hold
+PATTERN_WATCH_SEC = 8            # 8s scan before first entry
+PATTERN_WINDOW_SEC = 60          # 60s analysis window (see full oscillation waves)
+PATTERN_DIP_THRESHOLD = 0.35     # buy in bottom 35% of range
+PATTERN_EMA_K = 0.015            # slow EMA smoothing (tracks "normal" price level)
+PATTERN_MIN_BELOW_EMA = 0.15     # price must be $0.15+ below EMA (real dip, not noise)
+PATTERN_UPTICKS = 3              # need 3 consecutive up-ticks (confirmed bounce)
+PATTERN_MIN_HOLD_EXIT = 10       # hold at least 10s before allowing EMA exit
 
 # ---- Smart Filter Parameters ----
 
@@ -128,6 +131,7 @@ class TradingBot:
         self.pattern_status = "WAIT"    # WAIT → SCAN → BUY (for frontend)
         self.pattern_reason = "Warming up..."
         self.pattern_confidence = 0.0
+        self.pattern_ema = 0.0          # slow EMA for mean-reversion
 
     def add_tick(self, price: float, volume: float = 1.0, timestamp: float = None):
         now = timestamp or time.time()
@@ -182,6 +186,11 @@ class TradingBot:
         cutoff = now - max(MOMENTUM_WINDOW_SEC, PATTERN_WINDOW_SEC + 10)
         while self.price_history and self.price_history[0][0] < cutoff:
             self.price_history.popleft()
+        # Update slow pattern EMA
+        if self.pattern_ema == 0:
+            self.pattern_ema = price
+        else:
+            self.pattern_ema = price * PATTERN_EMA_K + self.pattern_ema * (1 - PATTERN_EMA_K)
 
     def _update_volume(self, volume: float):
         """Track recent volumes for exhaustion check."""
@@ -226,15 +235,18 @@ class TradingBot:
 
     def _check_pattern_entry(self, price: float, now: float) -> bool:
         """
-        Pure price-action dip detector.
-        Looks at last PATTERN_WINDOW_SEC seconds of prices:
-        1. Need enough data (at least 10 ticks in the window)
-        2. Find the range (high - low) — need some movement
-        3. Current price must be in the bottom PATTERN_DIP_THRESHOLD of that range
-        4. Price must be bouncing (at least 1 consecutive up-tick)
-        5. Recent trend shows the stock oscillates (not just free-falling)
-        Returns True if this looks like a good dip buy.
+        Mean-reversion dip detector (simulation-optimized).
+        1. Price must be below the slow EMA by at least PATTERN_MIN_BELOW_EMA
+        2. Price must be in the bottom PATTERN_DIP_THRESHOLD of recent range
+        3. Must have PATTERN_UPTICKS consecutive up-ticks (confirmed bounce)
         """
+        # EMA filter: only buy when price is significantly below "normal"
+        ema_gap = self.pattern_ema - price
+        if ema_gap < PATTERN_MIN_BELOW_EMA:
+            self.pattern_reason = f"Waiting for dip (${ema_gap:.2f} below EMA, need ${PATTERN_MIN_BELOW_EMA:.2f})"
+            self.pattern_confidence = round(min(ema_gap / PATTERN_MIN_BELOW_EMA, 1.0), 2) if PATTERN_MIN_BELOW_EMA > 0 else 0
+            return False
+
         # Gather prices in the analysis window
         cutoff = now - PATTERN_WINDOW_SEC
         window = [(t, p) for t, p in self.price_history if t >= cutoff]
@@ -249,43 +261,28 @@ class TradingBot:
         lo = min(prices)
         rng = hi - lo
 
-        # Need at least $0.02 of movement to detect a pattern
-        if rng < 0.02:
+        if rng < 0.03:
             self.pattern_reason = f"Range too flat (${rng:.2f})"
             self.pattern_confidence = 0.0
             return False
 
-        # Where is current price in the range? 0.0 = at low, 1.0 = at high
+        # Where is current price in the range?
         position_in_range = (price - lo) / rng
 
-        # Must be in the bottom portion (dip zone)
         if position_in_range > PATTERN_DIP_THRESHOLD:
             self.pattern_reason = f"Price too high in range ({position_in_range:.0%})"
             self.pattern_confidence = round(1.0 - position_in_range, 2)
             return False
 
-        # Must be bouncing — at least 1 up-tick (reversal starting)
-        if self.consecutive_up < 1:
-            self.pattern_reason = "At dip but no bounce yet..."
+        # Must have strong bounce confirmation
+        if self.consecutive_up < PATTERN_UPTICKS:
+            self.pattern_reason = f"Bounce: {self.consecutive_up}/{PATTERN_UPTICKS} upticks"
             self.pattern_confidence = round(1.0 - position_in_range, 2)
             return False
 
-        # Check it's not a freefall: split window in half, first half should have
-        # had a higher price (i.e. price came down then bounced)
-        mid = len(prices) // 2
-        first_half_avg = sum(prices[:mid]) / mid
-        second_half_avg = sum(prices[mid:]) / len(prices[mid:])
-
-        # If second half avg is MUCH lower, it's a freefall not a dip
-        if second_half_avg < first_half_avg * 0.997:
-            # Prices still trending down hard
-            self.pattern_reason = "Downtrend — waiting for bottom"
-            self.pattern_confidence = round(1.0 - position_in_range, 2)
-            return False
-
-        # All checks passed — this is a dip buy
+        # All checks passed
         self.pattern_confidence = round(1.0 - position_in_range, 2)
-        self.pattern_reason = f"Dip detected at ${price:.2f} (range ${lo:.2f}-${hi:.2f})"
+        self.pattern_reason = f"Dip buy! ${ema_gap:.2f} below EMA, {self.consecutive_up} upticks"
         return True
 
     def _calculate_slippage(self) -> float:
@@ -317,9 +314,8 @@ class TradingBot:
             if self._check_pattern_entry(price, now):
                 print(f"[Bot] PATTERN BUY: {self.pattern_reason}, price=${price:.2f}")
                 self.pattern_status = "BUY"
-                self.intent_price = price
-                self.exec_delay = random.uniform(EXEC_DELAY_MIN, EXEC_DELAY_MAX)
-                self._transition(BotState.ENTERING, now)
+                self._execute_buy(price, now)
+                self._transition(BotState.IN_POSITION, now)
 
         elif self.state == BotState.ENTERING:
             if elapsed >= self.exec_delay:
@@ -334,10 +330,17 @@ class TradingBot:
             dollar_pnl = (price - self.position_entry_price) * self.position_shares
 
             exit_reason = None
-            if dollar_pnl >= TAKE_PROFIT_DOLLARS:
-                exit_reason = "PROFIT"
-            elif dollar_pnl <= STOP_LOSS_DOLLARS:
+
+            # EMA crossover exit: price reverted back to mean = take profit
+            if (price >= self.pattern_ema
+                    and hold_time >= PATTERN_MIN_HOLD_EXIT
+                    and dollar_pnl > 0):
+                exit_reason = "EMA_CROSS"
+
+            # Hard stop loss
+            if dollar_pnl <= STOP_LOSS_DOLLARS:
                 exit_reason = "STOP_LOSS"
+            # Time limit
             elif hold_time >= PAT_MAX_HOLD_SECONDS:
                 exit_reason = "TIME_LIMIT"
 
@@ -511,3 +514,4 @@ class TradingBot:
         self.pattern_status = "WAIT"
         self.pattern_reason = "Warming up..."
         self.pattern_confidence = 0.0
+        self.pattern_ema = 0.0

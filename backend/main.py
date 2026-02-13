@@ -134,14 +134,22 @@ async def connect_alpaca():
 
 
 async def demo_bot_feed():
-    """Generate fake ticks for the demo bot 24/7."""
+    """Generate fake ticks for the demo bot 24/7.
+    Uses stronger mean-reversion + momentum for realistic oscillating waves
+    that the pattern-detection bot can trade profitably.
+    """
     import random
+    import math
 
     base_price = 135.00
     price = base_price
+    momentum = 0.0
     while True:
-        delta = random.uniform(-0.15, 0.15)
-        price += delta + (base_price - price) * 0.002
+        # Momentum gives short-term trends (up-waves and down-waves)
+        momentum = momentum * 0.92 + random.uniform(-0.08, 0.08)
+        noise = random.uniform(-0.06, 0.06)
+        mean_pull = (base_price - price) * 0.008  # stronger mean reversion
+        price += momentum + noise + mean_pull
         price = round(price, 2)
         vol = random.randint(10, 500)
         now = time.time()
