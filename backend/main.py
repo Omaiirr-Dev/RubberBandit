@@ -551,3 +551,16 @@ async def root():
 @app.get("/bot")
 async def bot_page():
     return FileResponse("frontend/bot.html")
+
+
+@app.get("/api/debug")
+async def debug_state():
+    """Debug endpoint: returns full bot state as JSON."""
+    live = bot.get_state()
+    live["_code_version"] = "790998a"  # our latest commit hash
+    live["_ai_enabled"] = bot.ai_enabled
+    live["_ai_recommendation"] = bot.ai_recommendation
+    live["_state"] = bot.state.value
+    live["_cash"] = bot.cash
+    live["_has_ai_brain"] = ai_brain is not None
+    return live
