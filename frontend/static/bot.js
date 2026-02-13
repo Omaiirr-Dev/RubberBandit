@@ -5,6 +5,7 @@
   let activeTab = "live"; // "live" or "demo"
   let ws = null;
   let connected = false;
+  let replayActive = false;
 
   const liveData = {
     dayPrices: [],
@@ -62,6 +63,13 @@
   const canvas = $("chart");
   const ctx = canvas.getContext("2d");
 
+  // Replay DOM refs
+  const replayBar = $("replay-bar");
+  const replayLabel = $("replay-label");
+  const replayFill = $("replay-fill");
+  const replayInfo = $("replay-info");
+  const replayBtn = $("replay-btn");
+
   // ---- Helpers ----
   function fmt(n) {
     if (n == null || n === 0) return "--";
@@ -92,6 +100,51 @@
     tabDemo.className = "tab-btn" + (tab === "demo" ? " active-demo" : "");
     render();
   };
+
+  // ---- Replay controls ----
+  window.startReplay = async function () {
+    replayBtn.textContent = "LOADING...";
+    replayBtn.disabled = true;
+    try {
+      const resp = await fetch("/api/replay", { method: "POST" });
+      const result = await resp.json();
+      if (!result.ok) {
+        alert("Replay failed: " + (result.reason || "Unknown error"));
+        replayBtn.textContent = "REPLAY TODAY";
+        replayBtn.disabled = false;
+      }
+      // Button state will be updated by replay_start message
+    } catch (e) {
+      alert("Replay error: " + e.message);
+      replayBtn.textContent = "REPLAY TODAY";
+      replayBtn.disabled = false;
+    }
+  };
+
+  window.stopReplay = async function () {
+    try {
+      await fetch("/api/replay/stop", { method: "POST" });
+    } catch (e) {
+      // ignore
+    }
+  };
+
+  function setReplayUI(active) {
+    replayActive = active;
+    if (active) {
+      replayBtn.textContent = "STOP";
+      replayBtn.className = "replay-btn stop";
+      replayBtn.disabled = false;
+      replayBtn.onclick = window.stopReplay;
+      replayBar.style.display = "flex";
+    } else {
+      replayBtn.textContent = "REPLAY TODAY";
+      replayBtn.className = "replay-btn";
+      replayBtn.disabled = false;
+      replayBtn.onclick = window.startReplay;
+      replayBar.style.display = "none";
+    }
+  }
 
   // ---- WebSocket ----
   function connect() {
@@ -125,21 +178,76 @@
     const type = data.type;
 
     if (type === "bot_update") {
-      liveData.state = data.live;
-      demoData.state = data.demo;
+      if (data.live) liveData.state = data.live;
+      if (data.demo) demoData.state = data.demo;
+
       // Accumulate day prices
-      if (data.live && data.live.price > 0) {
+      if (data.live && data.live.price > 0 && !data.replay_ts) {
         liveData.dayPrices.push([Date.now(), data.live.price]);
         thinPrices(liveData);
       }
       if (data.demo && data.demo.price > 0) {
-        demoData.dayPrices.push([Date.now(), data.demo.price]);
+        // During replay: use market timestamp; otherwise: wall clock
+        const ts = data.replay_ts || Date.now();
+        demoData.dayPrices.push([ts, data.demo.price]);
         thinPrices(demoData);
       }
+
       // Update markers from recent trades
       if (data.live) updateMarkersFromState(liveData, data.live);
       if (data.demo) updateMarkersFromState(demoData, data.demo);
+
+      // Update replay progress bar
+      if (data.replay_progress != null) {
+        replayFill.style.width = data.replay_progress + "%";
+        const mkt = data.replay_market_time || 0;
+        replayInfo.textContent = data.replay_progress.toFixed(0) + "% | " + mkt.toFixed(0) + "min";
+      }
+
       render();
+
+    } else if (type === "replay_loading") {
+      // Show loading status
+      replayBar.style.display = "flex";
+      replayLabel.textContent = "LOADING";
+      replayInfo.textContent = data.status || "Fetching...";
+      replayFill.style.width = "0%";
+
+    } else if (type === "replay_start") {
+      // Clear demo data for fresh replay
+      demoData.dayPrices = [];
+      demoData.markers = [];
+      demoData.trades = [];
+      demoData.state = null;
+      // Auto-switch to demo tab
+      window.switchTab("demo");
+      setReplayUI(true);
+      replayLabel.textContent = "REPLAYING " + (data.source === "trades" ? "REAL TICKS" : "BARS");
+      const est = data.est_replay_minutes || 0;
+      replayInfo.textContent = "~" + Math.round(est) + "min | " + (data.total_ticks || 0).toLocaleString() + " ticks";
+
+    } else if (type === "replay_end") {
+      setReplayUI(false);
+      // Show final summary in replay bar briefly
+      replayBar.style.display = "flex";
+      replayLabel.textContent = "REPLAY DONE";
+      const pnl = data.final_pnl || 0;
+      const pnlStr = (pnl >= 0 ? "+" : "") + "$" + Math.abs(pnl).toFixed(2);
+      replayInfo.textContent = data.total_trades + " trades | " + (data.win_rate || 0) + "% win | " + pnlStr;
+      replayFill.style.width = "100%";
+      replayFill.style.background = pnl >= 0 ? "var(--green)" : "var(--red)";
+      // Hide after 30 seconds
+      setTimeout(function () {
+        if (!replayActive) {
+          replayBar.style.display = "none";
+          replayFill.style.background = "var(--yellow)";
+        }
+      }, 30000);
+
+    } else if (type === "replay_error") {
+      setReplayUI(false);
+      alert("Replay error: " + (data.reason || "Unknown"));
+
     } else if (type === "day_init_live") {
       liveData.dayPrices = data.prices || [];
     } else if (type === "day_init_demo") {
@@ -156,7 +264,7 @@
   }
 
   function thinPrices(store) {
-    if (store.dayPrices.length > 2000) {
+    if (store.dayPrices.length > 3000) {
       const thinned = [];
       const step = 2;
       for (let i = 0; i < store.dayPrices.length; i += step) {
@@ -169,14 +277,8 @@
 
   function updateMarkersFromState(store, state) {
     if (!state.recent_trades) return;
-    // Rebuild markers from all trades in store + current position
-    const markers = [];
     const trades = state.recent_trades;
-    // We get full trade list from trade_log messages, but also update from bot_update
-    // Use trade_count to detect new trades
     if (state.trade_count > store.trades.length) {
-      // There are new trades — the recent_trades has the latest
-      // Merge any new ones
       for (const t of trades) {
         const exists = store.trades.find((x) => x.id === t.id);
         if (!exists) {
@@ -191,9 +293,6 @@
       store.markers.push({ ts: Math.round(t.exit_time * 1000), price: t.exit_price, type: "SELL" });
     }
     if (state.in_position && state.position_entry_price > 0) {
-      // Show open position marker
-      const entryTs = store.trades.length > 0 ? Date.now() - 1000 : Date.now();
-      // We don't have exact entry time in state, use a rough approach
       store.markers.push({ ts: Date.now() - 60000, price: state.position_entry_price, type: "BUY" });
     }
   }
@@ -527,6 +626,7 @@
         STOP_LOSS: ["SL", "sl"],
         TIME_LIMIT: ["TL", "tl"],
         SELL_SIGNAL: ["SS", "ss"],
+        EMA_CROSS: ["EC", "tp"],
         AI_PROFIT: ["AI$", "tp"],
         AI_SELL: ["AI", "ss"],
       };

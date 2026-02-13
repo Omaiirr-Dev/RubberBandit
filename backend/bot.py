@@ -93,6 +93,7 @@ class TradingBot:
         # Timing
         self.first_tick_time = None
         self.state_entered_at = None
+        self.last_tick_time = None
         self.exec_delay = 0.0
 
         # Current position
@@ -140,6 +141,7 @@ class TradingBot:
             self.first_tick_time = now
             self.state_entered_at = now
 
+        self.last_tick_time = now
         self.tick_count += 1
         self.engine.add_tick(price, volume, now)
         self.day_tracker.add_tick(price, now)
@@ -434,10 +436,11 @@ class TradingBot:
         total_value = self.cash + (self.position_shares * price if self.position_shares > 0 and price > 0 else 0)
         total_pnl = total_value - self.starting_cash
 
-        # Warmup progress
+        # Warmup progress (use last_tick_time for accurate replay support)
         warmup_pct = 0
         if self.state == BotState.WARMING_UP and self.first_tick_time:
-            elapsed = time.time() - self.first_tick_time
+            ref_time = self.last_tick_time or time.time()
+            elapsed = ref_time - self.first_tick_time
             warmup_pct = min(100, int((elapsed / self.warmup_seconds) * 100))
 
         # Trend indicator for frontend
@@ -495,6 +498,7 @@ class TradingBot:
         self.cash = STARTING_CASH
         self.first_tick_time = None
         self.state_entered_at = None
+        self.last_tick_time = None
         self.position_shares = 0.0
         self.position_entry_price = 0.0
         self.position_cash_used = 0.0

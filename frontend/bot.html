@@ -513,6 +513,53 @@
       line-height: 1.3;
     }
 
+    /* Replay bar */
+    .replay-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      background: rgba(251,191,36,0.06);
+      border: 1px solid rgba(251,191,36,0.3);
+      border-radius: 8px;
+    }
+    .replay-label {
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      color: var(--yellow);
+      white-space: nowrap;
+    }
+    .replay-info {
+      font-size: 9px;
+      color: var(--text-mid);
+      white-space: nowrap;
+      min-width: 60px;
+      text-align: right;
+    }
+    .replay-btn {
+      background: none;
+      border: 1px solid var(--yellow);
+      color: var(--yellow);
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 9px;
+      font-weight: 700;
+      padding: 4px 10px;
+      border-radius: 5px;
+      cursor: pointer;
+      letter-spacing: 0.5px;
+      white-space: nowrap;
+    }
+    .replay-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    .replay-btn.stop {
+      border-color: var(--red);
+      color: var(--red);
+    }
+
     /* Desktop layout */
     @media (min-width: 768px) {
       .container {
@@ -527,6 +574,7 @@
     <div class="header">
       <span class="logo">RubberBand BOT</span>
       <div class="header-controls">
+        <button class="replay-btn" id="replay-btn" onclick="startReplay()">REPLAY TODAY</button>
         <a href="/" class="nav-btn">DASHBOARD</a>
         <div class="status">
           <span id="status-text">CONNECTING</span>
@@ -539,6 +587,15 @@
     <div class="tab-bar">
       <button class="tab-btn active" id="tab-live" onclick="switchTab('live')">LIVE</button>
       <button class="tab-btn" id="tab-demo" onclick="switchTab('demo')">DEMO</button>
+    </div>
+
+    <!-- Replay progress (hidden by default) -->
+    <div class="replay-bar" id="replay-bar" style="display:none">
+      <span class="replay-label" id="replay-label">REPLAYING</span>
+      <div class="warmup-track" style="flex:1">
+        <div class="warmup-fill" id="replay-fill" style="width:0%;background:var(--yellow)"></div>
+      </div>
+      <span class="replay-info" id="replay-info">0%</span>
     </div>
 
     <!-- Bot status pill + warmup bar -->
@@ -661,6 +718,6 @@
     </div>
   </div>
 
-  <script src="/static/bot.js?v=4"></script>
+  <script src="/static/bot.js?v=5"></script>
 </body>
 </html>

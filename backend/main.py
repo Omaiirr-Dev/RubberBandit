@@ -7,6 +7,7 @@ import os
 import json
 import asyncio
 import time
+import random
 from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
 
@@ -47,6 +48,10 @@ demo_bot = TradingBot(demo=True)    # demo bot (fed by fake ticks 24/7)
 bot_clients: set[WebSocket] = set()
 demo_bot_task = None
 
+# ---- Replay mode ----
+replay_active = False
+replay_task = None
+
 
 async def broadcast(data: dict):
     """Send to all non-demo clients."""
@@ -67,12 +72,11 @@ async def broadcast_bot():
     if not bot_clients:
         return
     live_state = bot.get_state()
-    demo_state = demo_bot.get_state()
-    msg = json.dumps({
-        "type": "bot_update",
-        "live": live_state,
-        "demo": demo_state,
-    })
+    msg_data = {"type": "bot_update", "live": live_state}
+    # During replay, the replay_feed handles demo updates
+    if not replay_active:
+        msg_data["demo"] = demo_bot.get_state()
+    msg = json.dumps(msg_data)
     dead = set()
     for ws in bot_clients:
         try:
@@ -183,6 +187,8 @@ async def lifespan(app: FastAPI):
         alpaca_task.cancel()
     if demo_bot_task:
         demo_bot_task.cancel()
+    if replay_task:
+        replay_task.cancel()
     for entry in demo_clients.values():
         entry["task"].cancel()
 
@@ -304,6 +310,215 @@ async def fetch_day_backfill(ticker: str) -> list:
         if not page_token:
             break
     return all_bars
+
+
+async def fetch_day_trades(ticker: str) -> list:
+    """Fetch ALL real trades since market open from Alpaca.
+    Returns [(timestamp_seconds, price, volume), ...] — every single tick.
+    """
+    now = datetime.now(timezone.utc)
+    today_open = now.replace(hour=14, minute=30, second=0, microsecond=0)
+    if now < today_open:
+        return []
+    url = f"https://data.alpaca.markets/v2/stocks/{ticker}/trades"
+    headers = {
+        "APCA-API-KEY-ID": ALPACA_API_KEY,
+        "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
+    }
+    all_trades = []
+    page_token = None
+    page = 0
+    while True:
+        params = {
+            "start": today_open.isoformat(),
+            "end": now.isoformat(),
+            "limit": "10000",
+            "feed": "iex",
+        }
+        if page_token:
+            params["page_token"] = page_token
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(url, params=params, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+        for trade in data.get("trades", []):
+            ts_str = trade["t"]
+            ts_sec = datetime.fromisoformat(
+                ts_str.replace("Z", "+00:00")
+            ).timestamp()
+            all_trades.append((ts_sec, float(trade["p"]), float(trade["s"])))
+        page += 1
+        page_token = data.get("next_page_token")
+        if not page_token:
+            break
+        # Send loading progress to clients
+        msg = json.dumps({
+            "type": "replay_loading",
+            "status": f"Fetching trades... page {page} ({len(all_trades):,} trades)",
+        })
+        for ws in list(bot_clients):
+            try:
+                await ws.send_text(msg)
+            except Exception:
+                pass
+    return all_trades
+
+
+def interpolate_bars_to_ticks(bars: list) -> list:
+    """Fallback: convert 1-min bars [(ts_ms, close, vol), ...] to per-second ticks."""
+    ticks = []
+    for i in range(len(bars)):
+        ts_sec = bars[i][0] / 1000.0
+        close = bars[i][1]
+        vol = bars[i][2]
+        prev_close = bars[i - 1][1] if i > 0 else close
+        steps = 60
+        vol_per_tick = max(1, vol / steps)
+        for j in range(steps):
+            t = ts_sec + j
+            progress = (j + 1) / steps
+            base = prev_close + (close - prev_close) * progress
+            noise = random.uniform(-0.03, 0.03)
+            price = round(base + noise, 2)
+            ticks.append((t, price, vol_per_tick))
+    return ticks
+
+
+async def _notify_bot_clients(msg_data: dict):
+    """Send a message to all bot_clients."""
+    msg = json.dumps(msg_data)
+    dead = set()
+    for ws in bot_clients:
+        try:
+            await ws.send_text(msg)
+        except Exception:
+            dead.add(ws)
+    bot_clients.difference_update(dead)
+
+
+async def replay_feed(speed: float = 3.0):
+    """Replay real NVDA market data through the demo bot at Nx speed.
+    Fetches every real trade from Alpaca, preserving exact price action.
+    """
+    global replay_active, demo_bot
+
+    # Phase 1: Fetch real trades
+    await _notify_bot_clients({
+        "type": "replay_loading",
+        "status": "Fetching today's trades from Alpaca...",
+    })
+
+    ticks = []
+    source = "trades"
+    try:
+        ticks = await fetch_day_trades(TICKER)
+        print(f"[Replay] Fetched {len(ticks):,} real trades")
+    except Exception as e:
+        print(f"[Replay] Trades fetch failed: {e}, falling back to bars")
+
+    # Fallback: use 1-min bars if trades unavailable
+    if len(ticks) < 100:
+        source = "bars"
+        await _notify_bot_clients({
+            "type": "replay_loading",
+            "status": "Falling back to 1-min bar interpolation...",
+        })
+        try:
+            bars = await fetch_day_backfill(TICKER)
+            ticks = interpolate_bars_to_ticks(bars)
+            print(f"[Replay] Interpolated {len(bars)} bars → {len(ticks):,} ticks")
+        except Exception as e:
+            print(f"[Replay] Bar fetch also failed: {e}")
+            await _notify_bot_clients({
+                "type": "replay_error",
+                "reason": f"Could not fetch market data: {e}",
+            })
+            replay_active = False
+            return
+
+    if not ticks:
+        await _notify_bot_clients({
+            "type": "replay_error",
+            "reason": "No market data available for today",
+        })
+        replay_active = False
+        return
+
+    total = len(ticks)
+    # Calculate estimated replay duration
+    real_duration = ticks[-1][0] - ticks[0][0]
+    est_minutes = real_duration / speed / 60
+
+    print(f"[Replay] Starting: {total:,} ticks ({source}), "
+          f"{real_duration / 60:.0f}min market time at {speed}x → ~{est_minutes:.0f}min replay")
+
+    # Phase 2: Reset demo bot and start
+    demo_bot.reset()
+    replay_active = True
+
+    await _notify_bot_clients({
+        "type": "replay_start",
+        "total_ticks": total,
+        "speed": speed,
+        "source": source,
+        "market_minutes": round(real_duration / 60, 1),
+        "est_replay_minutes": round(est_minutes, 1),
+    })
+
+    # Phase 3: Feed ticks with proportional timing
+    for i, (sim_ts, price, vol) in enumerate(ticks):
+        if not replay_active:
+            break
+
+        demo_bot.add_tick(price, vol, sim_ts)
+
+        # Broadcast every tick (or every Nth tick if too fast)
+        # For real trades that can come in bursts, broadcast at most ~10/sec
+        should_broadcast = True
+        if i > 0 and source == "trades":
+            gap_from_prev = sim_ts - ticks[i - 1][0]
+            if gap_from_prev < 0.05 and i % 3 != 0:
+                should_broadcast = False  # throttle burst broadcasts
+
+        if should_broadcast:
+            elapsed_market = sim_ts - ticks[0][0]
+            await _notify_bot_clients({
+                "type": "bot_update",
+                "live": bot.get_state(),
+                "demo": demo_bot.get_state(),
+                "replay_ts": int(sim_ts * 1000),
+                "replay_progress": round((i + 1) / total * 100, 1),
+                "replay_tick": i + 1,
+                "replay_total": total,
+                "replay_market_time": round(elapsed_market / 60, 1),
+            })
+
+        # Proportional sleep: preserve real timing, just sped up
+        if i < total - 1:
+            real_gap = ticks[i + 1][0] - sim_ts
+            replay_gap = real_gap / speed
+            replay_gap = min(replay_gap, 2.0)  # cap long gaps at 2s
+            if replay_gap > 0.005:
+                await asyncio.sleep(replay_gap)
+
+    # Phase 4: Complete
+    replay_active = False
+    done_state = demo_bot.get_state()
+    wins = sum(1 for t in demo_bot.trades if t["pnl"] > 0)
+    total_trades = len(demo_bot.trades)
+    await _notify_bot_clients({
+        "type": "replay_end",
+        "demo": done_state,
+        "total_trades": total_trades,
+        "wins": wins,
+        "win_rate": round(wins / total_trades * 100, 1) if total_trades > 0 else 0,
+        "final_pnl": done_state["total_pnl"],
+        "source": source,
+        "ticks_played": total,
+    })
+    print(f"[Replay] Complete: {total_trades} trades, "
+          f"P&L=${done_state['total_pnl']:.2f}, "
+          f"{wins}/{total_trades} wins")
 
 
 app = FastAPI(title="RubberBand", lifespan=lifespan)
@@ -470,4 +685,50 @@ async def debug_state():
     live["_pattern_reason"] = bot.pattern_reason
     live["_state"] = bot.state.value
     live["_cash"] = bot.cash
+    live["_replay_active"] = replay_active
     return live
+
+
+@app.post("/api/replay")
+async def start_replay(speed: float = 3.0):
+    """Start replaying today's real market data through the demo bot."""
+    global replay_task, replay_active, demo_bot_task
+
+    if replay_active:
+        return {"ok": False, "reason": "Replay already running"}
+
+    if not ALPACA_API_KEY or ALPACA_API_KEY == "your_alpaca_api_key_here":
+        return {"ok": False, "reason": "No Alpaca API key configured"}
+
+    # Clamp speed
+    speed = max(1.0, min(20.0, speed))
+
+    # Stop normal demo feed so it doesn't interfere
+    if demo_bot_task:
+        demo_bot_task.cancel()
+        demo_bot_task = None
+
+    # Mark active before starting the task
+    replay_active = True
+    replay_task = asyncio.create_task(replay_feed(speed=speed))
+    return {"ok": True, "speed": speed}
+
+
+@app.post("/api/replay/stop")
+async def stop_replay():
+    """Stop a running replay and restart the normal demo feed."""
+    global replay_active, replay_task, demo_bot_task
+
+    if not replay_active:
+        return {"ok": False, "reason": "No replay running"}
+
+    replay_active = False
+    if replay_task:
+        replay_task.cancel()
+        replay_task = None
+
+    # Restart normal demo feed with fresh bot
+    demo_bot.reset()
+    demo_bot_task = asyncio.create_task(demo_bot_feed())
+    print("[Replay] Stopped, demo feed restarted")
+    return {"ok": True}
