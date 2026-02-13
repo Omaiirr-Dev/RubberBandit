@@ -830,11 +830,14 @@
           <button id="tab-live" class="chart-tab active">LIVE</button>
           <button id="tab-day" class="chart-tab">SINCE OPEN</button>
         </div>
-        <div class="legend">
-          <div class="legend-item"><div class="legend-dot" style="background:var(--green)"></div>Sup</div>
-          <div class="legend-item"><div class="legend-dot" style="background:var(--red)"></div>Res</div>
-          <div class="legend-item"><div class="legend-dot" style="background:var(--blue)"></div>VWAP</div>
-          <div class="legend-item"><div class="legend-dot" style="background:var(--cyan)"></div>Ctx</div>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <button id="wipe-markers-btn" class="chart-tab" style="display:none;font-size:9px;padding:2px 8px;cursor:pointer;">WIPE</button>
+          <div class="legend">
+            <div class="legend-item"><div class="legend-dot" style="background:var(--green)"></div>Sup</div>
+            <div class="legend-item"><div class="legend-dot" style="background:var(--red)"></div>Res</div>
+            <div class="legend-item"><div class="legend-dot" style="background:var(--blue)"></div>VWAP</div>
+            <div class="legend-item"><div class="legend-dot" style="background:var(--cyan)"></div>Ctx</div>
+          </div>
         </div>
       </div>
       <div class="chart-wrap">
@@ -843,6 +846,6 @@
     </div>
 
   </div>
-  <script src="/static/app.js?v=21"></script>
+  <script src="/static/app.js?v=22"></script>
 </body>
 </html>

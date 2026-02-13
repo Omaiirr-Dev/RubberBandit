@@ -16,6 +16,17 @@
   // Hover crosshair state for day chart
   let hoverX = null; // CSS pixel X relative to canvas, or null
 
+  // Zoom & pan state for day chart
+  let zoomLevel = 1.0;
+  let viewCenterTs = null;
+  let isDragging = false;
+  let dragStartX = 0;
+  let dragStartCenter = 0;
+
+  // Click markers: [{ts, price, type: "A"|"B"}]
+  let chartMarkers = [];
+  let nextMarkerType = "A";
+
   // Timer state — uses absolute timestamps so it works when backgrounded
   let timerEndAt = null; // Date.now() ms when timer finishes
   let timerInterval = null;
@@ -360,6 +371,26 @@
 
   // ---- Chart (Day / Since Open) ----
 
+  function getVisibleDayWindow() {
+    if (dayPrices.length < 2) return { data: dayPrices, minT: 0, maxT: 1 };
+    const allMinT = dayPrices[0].ts;
+    const allMaxT = dayPrices[dayPrices.length - 1].ts;
+    const totalRange = allMaxT - allMinT;
+    if (zoomLevel <= 1.0 || totalRange <= 0) {
+      return { data: dayPrices, minT: allMinT, maxT: allMaxT };
+    }
+    const visibleRange = totalRange / zoomLevel;
+    const center = viewCenterTs !== null ? viewCenterTs : allMaxT - visibleRange / 2;
+    let winMin = center - visibleRange / 2;
+    let winMax = center + visibleRange / 2;
+    if (winMin < allMinT) { winMin = allMinT; winMax = allMinT + visibleRange; }
+    if (winMax > allMaxT) { winMax = allMaxT; winMin = allMaxT - visibleRange; }
+    if (winMin < allMinT) winMin = allMinT;
+    const visible = dayPrices.filter(d => d.ts >= winMin && d.ts <= winMax);
+    if (visible.length < 2) return { data: dayPrices, minT: allMinT, maxT: allMaxT };
+    return { data: visible, minT: winMin, maxT: winMax };
+  }
+
   function drawDayChart() {
     const canvas = $("#chart");
     if (!canvas || dayPrices.length < 2) return;
@@ -384,15 +415,16 @@
 
     ctx.clearRect(0, 0, totalW, h);
 
-    const prices = dayPrices.map(d => d.price);
-    const times = dayPrices.map(d => d.ts);
-    const minP = Math.min(...prices) - 0.05;
-    const maxP = Math.max(...prices) + 0.05;
+    // Visible window (zoom/pan)
+    const { data: visData, minT, maxT } = getVisibleDayWindow();
+    if (visData.length < 2) return;
+
+    const visPrices = visData.map(d => d.price);
+    const minP = Math.min(...visPrices) - 0.05;
+    const maxP = Math.max(...visPrices) + 0.05;
     const rangeP = maxP - minP || 1;
     const toY = (p) => ch - ((p - minP) / rangeP) * ch;
 
-    const minT = times[0];
-    const maxT = times[times.length - 1];
     const rangeT = maxT - minT || 1;
     const toX = (t) => ((t - minT) / rangeT) * w;
 
@@ -458,13 +490,13 @@
 
     // Price line — green/red segments
     ctx.lineWidth = 1.5;
-    for (let i = 1; i < dayPrices.length; i++) {
-      const x0 = toX(dayPrices[i - 1].ts);
-      const y0 = toY(dayPrices[i - 1].price);
-      const x1 = toX(dayPrices[i].ts);
-      const y1 = toY(dayPrices[i].price);
+    for (let i = 1; i < visData.length; i++) {
+      const x0 = toX(visData[i - 1].ts);
+      const y0 = toY(visData[i - 1].price);
+      const x1 = toX(visData[i].ts);
+      const y1 = toY(visData[i].price);
       ctx.beginPath();
-      ctx.strokeStyle = dayPrices[i].price >= dayPrices[i - 1].price
+      ctx.strokeStyle = visData[i].price >= visData[i - 1].price
         ? "rgba(74,222,128,0.9)"
         : "rgba(248,113,113,0.9)";
       ctx.moveTo(x0, y0);
@@ -474,14 +506,14 @@
 
     // Gradient fill
     ctx.beginPath();
-    for (let i = 0; i < dayPrices.length; i++) {
-      const x = toX(dayPrices[i].ts);
-      const y = toY(dayPrices[i].price);
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+    for (let i = 0; i < visData.length; i++) {
+      const xp = toX(visData[i].ts);
+      const yp = toY(visData[i].price);
+      if (i === 0) ctx.moveTo(xp, yp);
+      else ctx.lineTo(xp, yp);
     }
-    ctx.lineTo(toX(dayPrices[dayPrices.length - 1].ts), ch);
-    ctx.lineTo(toX(dayPrices[0].ts), ch);
+    ctx.lineTo(toX(visData[visData.length - 1].ts), ch);
+    ctx.lineTo(toX(visData[0].ts), ch);
     ctx.closePath();
     const grad = ctx.createLinearGradient(0, 0, 0, ch);
     grad.addColorStop(0, "rgba(74,222,128,0.1)");
@@ -500,21 +532,86 @@
       ctx.fillText(state.price.toFixed(2), w + 3, cy + 3);
     }
 
+    // ---- Click markers ----
+    for (const marker of chartMarkers) {
+      const mx = toX(marker.ts);
+      const my = toY(marker.price);
+      if (mx >= 0 && mx <= w && my >= 0 && my <= ch) {
+        ctx.beginPath();
+        ctx.arc(mx, my, 5, 0, Math.PI * 2);
+        ctx.fillStyle = marker.type === "A" ? "#f87171" : "#4ade80";
+        ctx.fill();
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+    }
+
+    // Connecting line + stats between two markers
+    if (chartMarkers.length === 2) {
+      const mA = chartMarkers[0];
+      const mB = chartMarkers[1];
+      const ax = toX(mA.ts), ay = toY(mA.price);
+      const bx = toX(mB.ts), by = toY(mB.price);
+
+      ctx.strokeStyle = "rgba(255,255,255,0.5)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx, by);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      const dollarChg = mB.price - mA.price;
+      const pctChg = (dollarChg / mA.price) * 100;
+      const timeDiffSec = Math.abs(mB.ts - mA.ts) / 1000;
+      let timeStr;
+      if (timeDiffSec < 60) timeStr = Math.round(timeDiffSec) + "s";
+      else if (timeDiffSec < 3600) timeStr = Math.floor(timeDiffSec / 60) + "m " + Math.round(timeDiffSec % 60) + "s";
+      else timeStr = Math.floor(timeDiffSec / 3600) + "h " + Math.floor((timeDiffSec % 3600) / 60) + "m";
+
+      const sign = dollarChg >= 0 ? "+" : "";
+      const statsText = `${sign}$${dollarChg.toFixed(2)}  ${sign}${pctChg.toFixed(2)}%  ${timeStr}`;
+
+      const midX = (ax + bx) / 2;
+      const midY = Math.min(ay, by) - 14;
+
+      ctx.font = "bold 9px 'JetBrains Mono', monospace";
+      const stw = ctx.measureText(statsText).width + 10;
+      const sth = 16;
+      let stx = midX - stw / 2;
+      if (stx < 0) stx = 0;
+      if (stx + stw > w) stx = w - stw;
+      let sty = midY;
+      if (sty < 0) sty = Math.max(ay, by) + 8;
+
+      ctx.fillStyle = "rgba(17,17,17,0.92)";
+      ctx.beginPath();
+      ctx.roundRect(stx, sty, stw, sth, 3);
+      ctx.fill();
+      ctx.strokeStyle = dollarChg >= 0 ? "rgba(74,222,128,0.6)" : "rgba(248,113,113,0.6)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      ctx.fillStyle = dollarChg >= 0 ? "#4ade80" : "#f87171";
+      ctx.textAlign = "left";
+      ctx.fillText(statsText, stx + 5, sty + 11);
+    }
+
     // Hover crosshair
     if (hoverX !== null && hoverX >= 0 && hoverX <= w) {
-      // Find nearest data point by X position
       const hoverT = minT + (hoverX / w) * rangeT;
       let nearest = 0;
       let bestDist = Infinity;
-      for (let i = 0; i < dayPrices.length; i++) {
-        const dist = Math.abs(dayPrices[i].ts - hoverT);
+      for (let i = 0; i < visData.length; i++) {
+        const dist = Math.abs(visData[i].ts - hoverT);
         if (dist < bestDist) { bestDist = dist; nearest = i; }
       }
-      const pt = dayPrices[nearest];
+      const pt = visData[nearest];
       const px = toX(pt.ts);
       const py = toY(pt.price);
 
-      // Vertical line
       ctx.strokeStyle = "rgba(240,240,240,0.3)";
       ctx.lineWidth = 1;
       ctx.setLineDash([2, 2]);
@@ -523,20 +620,17 @@
       ctx.lineTo(px, ch);
       ctx.stroke();
 
-      // Horizontal line
       ctx.beginPath();
       ctx.moveTo(0, py);
       ctx.lineTo(w, py);
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Dot on the price line
       ctx.beginPath();
       ctx.arc(px, py, 3, 0, Math.PI * 2);
       ctx.fillStyle = "#f0f0f0";
       ctx.fill();
 
-      // Tooltip background + text
       const d = new Date(pt.ts);
       const hh = d.getHours().toString().padStart(2, "0");
       const mm = d.getMinutes().toString().padStart(2, "0");
@@ -545,7 +639,6 @@
       ctx.font = "bold 9px 'JetBrains Mono', monospace";
       const tw = ctx.measureText(label).width + 8;
       const th = 16;
-      // Position tooltip: avoid going off edges
       let tx = px - tw / 2;
       if (tx < 0) tx = 0;
       if (tx + tw > w) tx = w - tw;
@@ -572,8 +665,15 @@
     chartMode = mode;
     $("#tab-live").classList.toggle("active", mode === "live");
     $("#tab-day").classList.toggle("active", mode === "day");
-    if (mode === "live") drawChart();
-    else drawDayChart();
+    const wipeBtn = document.getElementById("wipe-markers-btn");
+    if (wipeBtn) wipeBtn.style.display = mode === "day" ? "" : "none";
+    if (mode === "live") {
+      zoomLevel = 1.0;
+      viewCenterTs = null;
+      drawChart();
+    } else {
+      drawDayChart();
+    }
   }
 
   // ---- Timer ----
@@ -732,7 +832,9 @@
       hoverX = clientX - rect.left;
       drawDayChart();
     }
-    chartCanvas.addEventListener("mousemove", (e) => handleHover(e.clientX));
+    chartCanvas.addEventListener("mousemove", (e) => {
+      if (!isDragging) handleHover(e.clientX);
+    });
     chartCanvas.addEventListener("mouseleave", () => {
       hoverX = null;
       if (chartMode === "day") drawDayChart();
@@ -745,6 +847,108 @@
       hoverX = null;
       if (chartMode === "day") drawDayChart();
     });
+
+    // Scroll-to-zoom on day chart
+    chartCanvas.addEventListener("wheel", (e) => {
+      if (chartMode !== "day" || dayPrices.length < 2) return;
+      e.preventDefault();
+      const rect = chartCanvas.getBoundingClientRect();
+      const rm = 38;
+      const cw = rect.width - rm;
+      const mouseX = e.clientX - rect.left;
+      const { minT: vMinT, maxT: vMaxT } = getVisibleDayWindow();
+      const vRangeT = vMaxT - vMinT;
+      const mouseT = vMinT + (mouseX / cw) * vRangeT;
+      const zoomFactor = e.deltaY < 0 ? 1.3 : 1 / 1.3;
+      const newZoom = Math.max(1.0, Math.min(50.0, zoomLevel * zoomFactor));
+      if (newZoom !== zoomLevel) {
+        viewCenterTs = mouseT;
+        zoomLevel = newZoom;
+        if (zoomLevel <= 1.01) { zoomLevel = 1.0; viewCenterTs = null; }
+        drawDayChart();
+      }
+    }, { passive: false });
+
+    // Click-to-mark on day chart
+    let mouseDownPos = null;
+    chartCanvas.addEventListener("mousedown", (e) => {
+      mouseDownPos = { x: e.clientX, y: e.clientY };
+      if (chartMode === "day" && zoomLevel > 1.0) {
+        isDragging = true;
+        dragStartX = e.clientX;
+        const { minT: vMinT, maxT: vMaxT } = getVisibleDayWindow();
+        dragStartCenter = viewCenterTs || (vMinT + vMaxT) / 2;
+        chartCanvas.style.cursor = "grabbing";
+      }
+    });
+
+    window.addEventListener("mousemove", (e) => {
+      if (!isDragging) return;
+      const rect = chartCanvas.getBoundingClientRect();
+      const rm = 38;
+      const cw = rect.width - rm;
+      const allMinT = dayPrices[0].ts;
+      const allMaxT = dayPrices[dayPrices.length - 1].ts;
+      const totalRange = allMaxT - allMinT;
+      const visibleRange = totalRange / zoomLevel;
+      const dx = e.clientX - dragStartX;
+      const dtPerPx = visibleRange / cw;
+      viewCenterTs = dragStartCenter - dx * dtPerPx;
+      drawDayChart();
+    });
+
+    window.addEventListener("mouseup", (e) => {
+      const wasDragging = isDragging;
+      if (isDragging) {
+        isDragging = false;
+        chartCanvas.style.cursor = "";
+      }
+      // Click detection: only place marker if mouse didn't move much
+      if (mouseDownPos && chartMode === "day" && dayPrices.length >= 2) {
+        const dx = Math.abs(e.clientX - mouseDownPos.x);
+        const dy = Math.abs(e.clientY - mouseDownPos.y);
+        if (dx < 5 && dy < 5) {
+          // This is a click, not a drag
+          const rect = chartCanvas.getBoundingClientRect();
+          const rm = 38;
+          const cw = rect.width - rm;
+          const clickX = mouseDownPos.x - rect.left;
+          if (clickX >= 0 && clickX <= cw) {
+            const { data: visD, minT: vMinT, maxT: vMaxT } = getVisibleDayWindow();
+            const vRangeT = vMaxT - vMinT || 1;
+            const clickT = vMinT + (clickX / cw) * vRangeT;
+            let nearest = 0;
+            let bestDist = Infinity;
+            for (let i = 0; i < visD.length; i++) {
+              const dist = Math.abs(visD[i].ts - clickT);
+              if (dist < bestDist) { bestDist = dist; nearest = i; }
+            }
+            const pt = visD[nearest];
+            if (nextMarkerType === "A") {
+              chartMarkers = [{ ts: pt.ts, price: pt.price, type: "A" }];
+              nextMarkerType = "B";
+            } else {
+              chartMarkers.push({ ts: pt.ts, price: pt.price, type: "B" });
+              nextMarkerType = "A";
+            }
+            drawDayChart();
+          }
+        }
+      }
+      mouseDownPos = null;
+    });
+
+    // Wipe markers button
+    const wipeBtn = document.getElementById("wipe-markers-btn");
+    if (wipeBtn) {
+      wipeBtn.addEventListener("click", () => {
+        chartMarkers = [];
+        nextMarkerType = "A";
+        zoomLevel = 1.0;
+        viewCenterTs = null;
+        if (chartMode === "day") drawDayChart();
+      });
+    }
 
     // Also catch visibility change to immediately re-check timer
     document.addEventListener("visibilitychange", () => {

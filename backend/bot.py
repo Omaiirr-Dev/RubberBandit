@@ -39,6 +39,11 @@ SLIPPAGE_SPIKE_MAX = 0.06    # max 6 cents on bad fill
 
 SPREAD_PER_SHARE = 0.02
 
+# ---- AI-driven dollar-based targets ----
+AI_TAKE_PROFIT_DOLLARS = 7.00    # safety auto-sell if profit hits $7
+AI_STOP_LOSS_DOLLARS = -10.00    # hard stop loss at -$10
+AI_MAX_HOLD_SECONDS = 300        # 5 min max hold for AI trades
+
 # ---- Smart Filter Parameters ----
 
 # Trend filter: EMA crossover
@@ -115,6 +120,12 @@ class TradingBot:
 
         # Volume exhaustion: recent volumes
         self.volume_history = deque(maxlen=VOLUME_PRIOR + VOLUME_RECENT)
+
+        # ---- AI Brain integration ----
+        self.ai_recommendation = "HOLD"
+        self.ai_reason = "Waiting for AI..."
+        self.ai_confidence = 0.0
+        self.ai_enabled = False
 
     def add_tick(self, price: float, volume: float = 1.0, timestamp: float = None):
         now = timestamp or time.time()
@@ -222,20 +233,29 @@ class TradingBot:
                 self._transition(BotState.WATCHING, now)
 
         elif self.state == BotState.WATCHING:
-            if (self.engine.action == "BUY"
+            if self.ai_enabled:
+                # AI-driven entry
+                if self.ai_recommendation == "BUY" and self.cash > 100:
+                    # Still apply basic safety guardrails
+                    if not self._check_trend():
+                        return
+                    if not self._check_momentum(price):
+                        return
+                    self.intent_price = price
+                    self.exec_delay = random.uniform(EXEC_DELAY_MIN, EXEC_DELAY_MAX)
+                    self._transition(BotState.ENTERING, now)
+            elif (self.engine.action == "BUY"
                     and self.engine.signal_score >= BUY_THRESHOLD
                     and self.cash > 100):
-                # ---- Smart filters gate ----
-                # All must pass for the bot to enter
+                # Original signal-based entry with all smart filters
                 if not self._check_trend():
-                    return  # downtrend — skip
+                    return
                 if not self._check_momentum(price):
-                    return  # sharp drop — skip
+                    return
                 if not self._check_reversal():
-                    return  # not bouncing yet — wait
+                    return
                 if not self._check_volume_exhaustion():
-                    return  # heavy selling — skip
-
+                    return
                 self.intent_price = price
                 self.exec_delay = random.uniform(EXEC_DELAY_MIN, EXEC_DELAY_MAX)
                 self._transition(BotState.ENTERING, now)
@@ -251,17 +271,30 @@ class TradingBot:
                 return
             hold_time = now - self.position_entry_time
             pnl_pct = ((price - self.position_entry_price) / self.position_entry_price) * 100
+            dollar_pnl = (price - self.position_entry_price) * self.position_shares
 
             exit_reason = None
-            if pnl_pct >= TAKE_PROFIT_PCT:
-                exit_reason = "TAKE_PROFIT"
-            elif pnl_pct <= STOP_LOSS_PCT:
-                exit_reason = "STOP_LOSS"
-            elif hold_time >= MAX_HOLD_SECONDS:
-                exit_reason = "TIME_LIMIT"
-            elif (self.engine.action == "SELL"
-                  and self.engine.signal_score >= SELL_SIGNAL_THRESHOLD):
-                exit_reason = "SELL_SIGNAL"
+            if self.ai_enabled:
+                # AI-driven exit: dollar-based targets
+                if dollar_pnl >= AI_TAKE_PROFIT_DOLLARS:
+                    exit_reason = "AI_PROFIT"
+                elif dollar_pnl <= AI_STOP_LOSS_DOLLARS:
+                    exit_reason = "STOP_LOSS"
+                elif hold_time >= AI_MAX_HOLD_SECONDS:
+                    exit_reason = "TIME_LIMIT"
+                elif self.ai_recommendation == "SELL":
+                    exit_reason = "AI_SELL"
+            else:
+                # Original percentage-based exit
+                if pnl_pct >= TAKE_PROFIT_PCT:
+                    exit_reason = "TAKE_PROFIT"
+                elif pnl_pct <= STOP_LOSS_PCT:
+                    exit_reason = "STOP_LOSS"
+                elif hold_time >= MAX_HOLD_SECONDS:
+                    exit_reason = "TIME_LIMIT"
+                elif (self.engine.action == "SELL"
+                      and self.engine.signal_score >= SELL_SIGNAL_THRESHOLD):
+                    exit_reason = "SELL_SIGNAL"
 
             if exit_reason:
                 self.exit_reason = exit_reason
@@ -386,6 +419,10 @@ class TradingBot:
             "trend": trend,
             "ema_fast": round(self.ema_fast, 4),
             "ema_slow": round(self.ema_slow, 4),
+            "ai_enabled": self.ai_enabled,
+            "ai_recommendation": self.ai_recommendation,
+            "ai_reason": self.ai_reason,
+            "ai_confidence": round(self.ai_confidence, 2),
         }
 
     def get_all_trades(self) -> list:
@@ -422,3 +459,7 @@ class TradingBot:
         self.consecutive_up = 0
         self.price_history.clear()
         self.volume_history.clear()
+        # Reset AI state
+        self.ai_recommendation = "HOLD"
+        self.ai_reason = "Waiting for AI..."
+        self.ai_confidence = 0.0

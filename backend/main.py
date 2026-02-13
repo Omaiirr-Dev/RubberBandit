@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 
 from backend.engine import TradingEngine, DayTracker
 from backend.bot import TradingBot
+from backend.ai_brain import AIBrain
 
 load_dotenv()
 
@@ -27,6 +28,7 @@ TICKER = os.getenv("TICKER", "NVDA")
 SPREAD = float(os.getenv("SPREAD", "0.02"))
 POSITION_SIZE = float(os.getenv("POSITION_SIZE", "10000"))
 PORT = int(os.getenv("PORT", "8000"))
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 engine = TradingEngine()
 engine.spread = SPREAD
@@ -46,6 +48,10 @@ bot = TradingBot()                  # live bot (fed by Alpaca ticks)
 demo_bot = TradingBot(demo=True)    # demo bot (fed by fake ticks 24/7)
 bot_clients: set[WebSocket] = set()
 demo_bot_task = None
+
+# ---- AI Brain ----
+ai_brain = None
+ai_brain_demo = None
 
 
 async def broadcast(data: dict):
@@ -68,6 +74,10 @@ async def broadcast_bot():
         return
     live_state = bot.get_state()
     demo_state = demo_bot.get_state()
+    if ai_brain:
+        live_state.update(ai_brain.get_state())
+    if ai_brain_demo:
+        demo_state.update(ai_brain_demo.get_state())
     msg = json.dumps({
         "type": "bot_update",
         "live": live_state,
@@ -150,12 +160,76 @@ async def demo_bot_feed():
         await asyncio.sleep(1)
 
 
+async def ai_scan_loop(target_bot: TradingBot, brain: AIBrain, interval: int = 60):
+    """Background loop: calls AI every `interval` seconds, stores recommendation in bot."""
+    if brain.first_scan_time == 0:
+        brain.first_scan_time = time.time()
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            now = time.time()
+            minutes_scanning = (now - brain.first_scan_time) / 60.0
+
+            # Get last 30 min of prices from day_tracker
+            cutoff_ms = int((now - 1800) * 1000)
+            recent = [(ts_ms, p) for ts_ms, p in target_bot.day_tracker.prices if ts_ms >= cutoff_ms]
+
+            # Downsample to ~30 points
+            if len(recent) > 30:
+                step = len(recent) // 30
+                recent = recent[::step][:30]
+
+            prices_30min = []
+            for ts_ms, p in recent:
+                dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+                prices_30min.append((dt.strftime("%H:%M:%S"), p))
+
+            s = target_bot.get_state()
+            chart_data = {
+                "prices_30min": prices_30min,
+                "current_price": s["price"],
+                "support_floor": s["support_floor"],
+                "resistance_ceiling": s["resistance_ceiling"],
+                "vwap": s["vwap"],
+                "ema_fast": s["ema_fast"],
+                "ema_slow": s["ema_slow"],
+                "trend": s["trend"],
+                "in_position": s["in_position"],
+                "entry_price": s["position_entry_price"] if s["in_position"] else None,
+                "unrealized_pnl": s["unrealized_pnl"],
+                "position_value": s["position_shares"] * s["price"] if s["in_position"] else 0,
+                "cash": s["cash"],
+                "minutes_scanning": minutes_scanning,
+            }
+
+            result = await brain.analyze(chart_data)
+            target_bot.ai_recommendation = result["action"]
+            target_bot.ai_reason = result["reason"]
+            target_bot.ai_confidence = result["confidence"]
+
+            label = "DEMO" if target_bot.demo else "LIVE"
+            print(f"[AI {label}] {result['action']} — {result['reason']} (conf: {result['confidence']:.0%})")
+
+        except Exception as e:
+            print(f"[AI] Scan error: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global alpaca_task, demo_bot_task
+    global alpaca_task, demo_bot_task, ai_brain, ai_brain_demo
+    ai_live_task = None
+    ai_demo_task = None
+
     # Always start demo bot feed
     demo_bot_task = asyncio.create_task(demo_bot_feed())
     print("[Bot] Demo bot started (fake ticks 24/7)")
+
+    # Start AI brain for demo bot if OpenAI key available
+    if OPENAI_API_KEY:
+        ai_brain_demo = AIBrain(OPENAI_API_KEY)
+        demo_bot.ai_enabled = True
+        ai_demo_task = asyncio.create_task(ai_scan_loop(demo_bot, ai_brain_demo, interval=60))
+        print("[AI] Demo bot AI brain started (scanning every 60s)")
 
     if ALPACA_API_KEY and ALPACA_API_KEY != "your_alpaca_api_key_here":
         try:
@@ -167,6 +241,13 @@ async def lifespan(app: FastAPI):
             print(f"[DayTracker] Backfill failed: {e}")
         alpaca_task = asyncio.create_task(connect_alpaca())
         print(f"[RubberBand] Streaming {TICKER} from Alpaca")
+
+        # Start AI brain for live bot
+        if OPENAI_API_KEY:
+            ai_brain = AIBrain(OPENAI_API_KEY)
+            bot.ai_enabled = True
+            ai_live_task = asyncio.create_task(ai_scan_loop(bot, ai_brain, interval=60))
+            print("[AI] Live bot AI brain started (scanning every 60s)")
     else:
         print("[RubberBand] No Alpaca API key set — use DEMO button")
     yield
@@ -174,6 +255,10 @@ async def lifespan(app: FastAPI):
         alpaca_task.cancel()
     if demo_bot_task:
         demo_bot_task.cancel()
+    if ai_live_task:
+        ai_live_task.cancel()
+    if ai_demo_task:
+        ai_demo_task.cancel()
     for entry in demo_clients.values():
         entry["task"].cancel()
 

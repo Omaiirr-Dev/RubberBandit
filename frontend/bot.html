@@ -456,6 +456,63 @@
       margin-top: 2px;
     }
 
+    /* AI Brain card */
+    .ai-card {
+      background: var(--surface);
+      border: 1px solid rgba(168, 85, 247, 0.3);
+      border-radius: 8px;
+      padding: 8px 10px;
+      display: none;
+    }
+    .ai-card.active {
+      border-color: rgba(168, 85, 247, 0.6);
+      box-shadow: 0 0 8px rgba(168, 85, 247, 0.1);
+    }
+    .ai-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .ai-label {
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      color: rgba(168, 85, 247, 0.7);
+    }
+    .ai-badge {
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+    .ai-badge.buy { background: var(--green-dim); color: var(--green); }
+    .ai-badge.sell { background: var(--red-dim); color: var(--red); }
+    .ai-badge.hold { background: rgba(136,136,136,0.1); color: var(--text-dim); }
+    .ai-badge.scanning {
+      background: rgba(168, 85, 247, 0.1);
+      color: rgba(168, 85, 247, 0.8);
+      animation: pill-pulse 1.5s infinite;
+    }
+    .ai-conf {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-mid);
+    }
+    .ai-timer {
+      font-size: 9px;
+      color: var(--text-dim);
+      margin-left: auto;
+    }
+    .ai-reason {
+      font-size: 10px;
+      color: var(--text-mid);
+      margin-top: 4px;
+      line-height: 1.3;
+    }
+
     /* Desktop layout */
     @media (min-width: 768px) {
       .container {
@@ -491,6 +548,17 @@
         <div class="warmup-fill" id="warmup-fill" style="width: 0%"></div>
       </div>
       <span class="warmup-pct" id="warmup-pct">0%</span>
+    </div>
+
+    <!-- AI Brain status -->
+    <div class="ai-card" id="ai-card">
+      <div class="ai-header">
+        <span class="ai-label">AI BRAIN</span>
+        <span class="ai-badge hold" id="ai-badge">HOLD</span>
+        <span class="ai-conf" id="ai-conf">0%</span>
+        <span class="ai-timer" id="ai-timer">--</span>
+      </div>
+      <div class="ai-reason" id="ai-reason">Waiting for AI...</div>
     </div>
 
     <!-- Cash display -->
@@ -593,6 +661,6 @@
     </div>
   </div>
 
-  <script src="/static/bot.js?v=2"></script>
+  <script src="/static/bot.js?v=3"></script>
 </body>
 </html>

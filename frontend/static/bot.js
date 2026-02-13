@@ -50,6 +50,11 @@
   const signalBadge = $("signal-badge");
   const signalScore = $("signal-score");
   const trendBadge = $("trend-badge");
+  const aiCard = $("ai-card");
+  const aiBadge = $("ai-badge");
+  const aiConf = $("ai-conf");
+  const aiTimer = $("ai-timer");
+  const aiReason = $("ai-reason");
   const gaugeFill = $("gauge-fill");
   const chartPriceLabel = $("chart-price-label");
   const tradeCount = $("trade-count");
@@ -266,6 +271,9 @@
     trendBadge.textContent = trend === "up" ? "TREND UP" : "TREND DN";
     trendBadge.className = "trend-badge " + trend;
 
+    // AI Brain
+    renderAI(s);
+
     // Chart
     drawChart();
 
@@ -297,6 +305,40 @@
       warmupTrack.style.display = "none";
       document.getElementById("warmup-pct").style.display = "none";
     }
+  }
+
+  // ---- AI Brain ----
+  function renderAI(s) {
+    if (!aiCard) return;
+    const enabled = s.ai_enabled;
+    if (!enabled) { aiCard.style.display = "none"; return; }
+    aiCard.style.display = "";
+    const rec = s.ai_recommendation || "HOLD";
+    const reason = s.ai_reason || "Waiting...";
+    const confidence = s.ai_confidence || 0;
+    const lastScan = s.ai_last_scan || 0;
+    const scanCount = s.ai_scan_count || 0;
+
+    aiCard.className = "ai-card" + (scanCount > 0 ? " active" : "");
+
+    if (scanCount === 0) {
+      aiBadge.textContent = "SCANNING";
+      aiBadge.className = "ai-badge scanning";
+    } else {
+      aiBadge.textContent = rec;
+      aiBadge.className = "ai-badge " + rec.toLowerCase();
+    }
+
+    aiConf.textContent = Math.round(confidence * 100) + "%";
+
+    if (lastScan > 0) {
+      const ago = Math.round(Date.now() / 1000 - lastScan);
+      aiTimer.textContent = ago < 60 ? ago + "s ago" : Math.floor(ago / 60) + "m ago";
+    } else {
+      aiTimer.textContent = "waiting...";
+    }
+
+    aiReason.textContent = reason;
   }
 
   // ---- Chart ----
@@ -492,6 +534,8 @@
         STOP_LOSS: ["SL", "sl"],
         TIME_LIMIT: ["TL", "tl"],
         SELL_SIGNAL: ["SS", "ss"],
+        AI_PROFIT: ["AI$", "tp"],
+        AI_SELL: ["AI", "ss"],
       };
       const [reasonText, reasonCls] = reasonMap[t.exit_reason] || [t.exit_reason || "?", "tl"];
       const holdStr = fmtTime(t.hold_seconds);
