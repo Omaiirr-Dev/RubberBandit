@@ -39,16 +39,16 @@ SLIPPAGE_SPIKE_MAX = 0.005   # unused with 0% spike chance
 
 SPREAD_PER_SHARE = 0.01      # tight spread for liquid stocks
 
-# ---- Pattern-based mean-reversion scalping ----
-STOP_LOSS_DOLLARS = -15.00       # wide stop — survive noise, let trades breathe
-PAT_MAX_HOLD_SECONDS = 240       # 4 min max hold
+# ---- Pattern-based mean-reversion scalping (optimized on 5 days real NVDA data) ----
+STOP_LOSS_DOLLARS = -20.00       # wide stop — survive noise, let trades breathe
+PAT_MAX_HOLD_SECONDS = 60        # 60s max hold — quick in/out scalps
 PATTERN_WATCH_SEC = 8            # 8s scan before first entry
-PATTERN_WINDOW_SEC = 60          # 60s analysis window (see full oscillation waves)
+PATTERN_WINDOW_SEC = 45          # 45s analysis window (tighter = more responsive)
 PATTERN_DIP_THRESHOLD = 0.35     # buy in bottom 35% of range
-PATTERN_EMA_K = 0.015            # slow EMA smoothing (tracks "normal" price level)
-PATTERN_MIN_BELOW_EMA = 0.15     # price must be $0.15+ below EMA (real dip, not noise)
-PATTERN_UPTICKS = 3              # need 3 consecutive up-ticks (confirmed bounce)
-PATTERN_MIN_HOLD_EXIT = 10       # hold at least 10s before allowing EMA exit
+PATTERN_EMA_K = 0.030            # faster EMA (reacts quicker to NVDA moves)
+PATTERN_MIN_BELOW_EMA = 0.05     # $0.05 below EMA — catch small dips (NVDA is volatile enough)
+PATTERN_UPTICKS = 2              # 2 consecutive up-ticks (fast confirmation)
+PATTERN_MIN_HOLD_EXIT = 15       # hold 15s before allowing EMA exit
 
 # ---- Smart Filter Parameters ----
 
