@@ -164,6 +164,7 @@ async def ai_scan_loop(target_bot: TradingBot, brain: AIBrain, interval: int = 6
     """Background loop: calls AI every `interval` seconds, stores recommendation in bot."""
     if brain.first_scan_time == 0:
         brain.first_scan_time = time.time()
+    consecutive_holds = 0
     while True:
         await asyncio.sleep(interval)
         try:
@@ -173,6 +174,10 @@ async def ai_scan_loop(target_bot: TradingBot, brain: AIBrain, interval: int = 6
             # Get last 30 min of prices from day_tracker
             cutoff_ms = int((now - 1800) * 1000)
             recent = [(ts_ms, p) for ts_ms, p in target_bot.day_tracker.prices if ts_ms >= cutoff_ms]
+
+            if not recent:
+                print(f"[AI] No recent price data, skipping scan")
+                continue
 
             # Downsample to ~30 points
             if len(recent) > 30:
@@ -203,15 +208,32 @@ async def ai_scan_loop(target_bot: TradingBot, brain: AIBrain, interval: int = 6
             }
 
             result = await brain.analyze(chart_data)
-            target_bot.ai_recommendation = result["action"]
-            target_bot.ai_reason = result["reason"]
+            action = result["action"]
+            reason = result["reason"]
+
+            # Force BUY if AI keeps NOT recommending BUY while we're not in a position
+            if not s["in_position"] and action != "BUY":
+                consecutive_holds += 1
+                if consecutive_holds >= 2 and minutes_scanning >= 1.0:
+                    old_action = action
+                    action = "BUY"
+                    reason = f"Forced BUY: AI said {old_action} x{consecutive_holds}, overriding"
+                    print(f"[AI] Force-BUY: AI said {old_action} {consecutive_holds} times while not in position")
+                    consecutive_holds = 0
+            else:
+                consecutive_holds = 0
+
+            target_bot.ai_recommendation = action
+            target_bot.ai_reason = reason
             target_bot.ai_confidence = result["confidence"]
 
             label = "DEMO" if target_bot.demo else "LIVE"
-            print(f"[AI {label}] {result['action']} — {result['reason']} (conf: {result['confidence']:.0%})")
+            print(f"[AI {label}] {action} — {reason} (conf: {result['confidence']:.0%}) [state: {s['bot_status']}, cash: ${s['cash']:.2f}, holds: {consecutive_holds}]")
 
         except Exception as e:
             print(f"[AI] Scan error: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 @asynccontextmanager
@@ -241,8 +263,8 @@ async def lifespan(app: FastAPI):
         if OPENAI_API_KEY:
             ai_brain = AIBrain(OPENAI_API_KEY)
             bot.ai_enabled = True
-            ai_live_task = asyncio.create_task(ai_scan_loop(bot, ai_brain, interval=60))
-            print("[AI] Live bot AI brain started (scanning every 60s)")
+            ai_live_task = asyncio.create_task(ai_scan_loop(bot, ai_brain, interval=20))
+            print("[AI] Live bot AI brain started (scanning every 20s)")
     else:
         print("[RubberBand] No Alpaca API key set — use DEMO button")
     yield

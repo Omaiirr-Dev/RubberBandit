@@ -8,7 +8,11 @@ Trading Decision Support Engine
 
 import time
 import math
+from datetime import datetime, timezone, timedelta
 from collections import deque
+
+# US Eastern timezone offset for market-day boundary detection
+_ET = timezone(timedelta(hours=-5))
 
 
 class DayTracker:
@@ -19,9 +23,23 @@ class DayTracker:
         self.freq_bins = {}    # {price_cents: count}
         self.day_high = 0.0
         self.day_low = float("inf")
+        self._last_date = None  # ET date of last tick for daily reset
+
+    def reset(self):
+        """Clear all accumulated data."""
+        self.prices.clear()
+        self.freq_bins.clear()
+        self.day_high = 0.0
+        self.day_low = float("inf")
+        self._last_date = None
 
     def add_tick(self, price: float, timestamp: float = None):
         ts = timestamp or time.time()
+        # Auto-reset when a new calendar day starts (US Eastern)
+        tick_date = datetime.fromtimestamp(ts, tz=_ET).date()
+        if self._last_date is not None and tick_date != self._last_date:
+            self.reset()
+        self._last_date = tick_date
         self.prices.append((int(ts * 1000), price))
         key = round(price, 2)
         self.freq_bins[key] = self.freq_bins.get(key, 0) + 1
@@ -40,6 +58,10 @@ class DayTracker:
                 self.day_high = price
             if price < self.day_low:
                 self.day_low = price
+        # Record the date of the last backfill bar for daily reset detection
+        if bars:
+            last_ts_s = bars[-1][0] / 1000
+            self._last_date = datetime.fromtimestamp(last_ts_s, tz=_ET).date()
 
     def get_top5(self) -> list:
         """Top 5 most-hit prices, sorted price descending."""

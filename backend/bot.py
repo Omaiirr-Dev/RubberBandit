@@ -17,7 +17,7 @@ from backend.engine import TradingEngine, DayTracker
 
 STARTING_CASH = 10_000.00
 
-WARMUP_SECONDS = 600         # 10 minutes (live)
+WARMUP_SECONDS = 60          # 1 minute (live) — backfill provides history
 WARMUP_SECONDS_DEMO = 45    # 45 seconds (demo)
 
 BUY_THRESHOLD = 72           # catch more dips (engine's base is 70)
@@ -27,7 +27,7 @@ TAKE_PROFIT_PCT = 0.10       # +0.10% — micro scalps (~$5 net per win)
 STOP_LOSS_PCT = -0.12        # -0.12% — tight stop, cut losers fast
 MAX_HOLD_SECONDS = 180       # 3 minutes — true scalp, in and out
 
-COOLDOWN_SECONDS = 30        # 30 seconds — rapid re-entry
+COOLDOWN_SECONDS = 10        # 10 seconds — minimal pause between trades
 
 EXEC_DELAY_MIN = 0.3         # seconds — fast limit-order style
 EXEC_DELAY_MAX = 1.0
@@ -40,9 +40,9 @@ SLIPPAGE_SPIKE_MAX = 0.06    # max 6 cents on bad fill
 SPREAD_PER_SHARE = 0.02
 
 # ---- AI-driven dollar-based targets ----
-AI_TAKE_PROFIT_DOLLARS = 7.00    # safety auto-sell if profit hits $7
-AI_STOP_LOSS_DOLLARS = -10.00    # hard stop loss at -$10
-AI_MAX_HOLD_SECONDS = 300        # 5 min max hold for AI trades
+AI_TAKE_PROFIT_DOLLARS = 3.00    # auto-sell at $3 profit (frequent small wins)
+AI_STOP_LOSS_DOLLARS = -6.00     # hard stop loss at -$6
+AI_MAX_HOLD_SECONDS = 180        # 3 min max hold for AI trades
 
 # ---- Smart Filter Parameters ----
 
@@ -234,13 +234,16 @@ class TradingBot:
 
         elif self.state == BotState.WATCHING:
             if self.ai_enabled:
-                # AI-driven entry
+                watching_time = now - self.state_entered_at
                 if self.ai_recommendation == "BUY" and self.cash > 100:
-                    # Still apply basic safety guardrails
-                    if not self._check_trend():
-                        return
-                    if not self._check_momentum(price):
-                        return
+                    # AI says buy — go
+                    print(f"[Bot] AI says BUY, entering! cash=${self.cash:.2f}, price=${price:.2f}")
+                    self.intent_price = price
+                    self.exec_delay = random.uniform(EXEC_DELAY_MIN, EXEC_DELAY_MAX)
+                    self._transition(BotState.ENTERING, now)
+                elif watching_time >= 45 and self.cash > 100:
+                    # Failsafe: been waiting 45s+ without a BUY — just enter
+                    print(f"[Bot] WATCHING timeout ({watching_time:.0f}s), forcing entry at ${price:.2f}, cash=${self.cash:.2f}")
                     self.intent_price = price
                     self.exec_delay = random.uniform(EXEC_DELAY_MIN, EXEC_DELAY_MAX)
                     self._transition(BotState.ENTERING, now)
@@ -304,6 +307,8 @@ class TradingBot:
         elif self.state == BotState.EXITING:
             if elapsed >= self.exec_delay:
                 self._execute_sell(price, now)
+                # Reset AI recommendation so stale SELL doesn't block next BUY
+                self.ai_recommendation = "HOLD"
                 self._transition(BotState.COOLING_DOWN, now)
 
         elif self.state == BotState.COOLING_DOWN:
@@ -356,6 +361,7 @@ class TradingBot:
             "position_cash": round(self.position_cash_used, 2),
         }
         self.trades.append(trade)
+        print(f"[Bot] SELL #{trade['id']}: {self.exit_reason}, P&L=${net_pnl:.2f}, cash after=${net_proceeds:.2f}")
 
         self.cash = net_proceeds
 

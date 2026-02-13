@@ -16,12 +16,14 @@
   // Hover crosshair state for day chart
   let hoverX = null; // CSS pixel X relative to canvas, or null
 
-  // Zoom & pan state for day chart
+  // Zoom & pan state for day chart (frozen absolute bounds)
   let zoomLevel = 1.0;
-  let viewCenterTs = null;
+  let viewMinT = null;   // frozen left bound (ms timestamp), null = show all
+  let viewMaxT = null;   // frozen right bound
   let isDragging = false;
   let dragStartX = 0;
-  let dragStartCenter = 0;
+  let dragStartMinT = 0;
+  let dragStartMaxT = 0;
 
   // Click markers: [{ts, price, type: "A"|"B"}]
   let chartMarkers = [];
@@ -375,20 +377,14 @@
     if (dayPrices.length < 2) return { data: dayPrices, minT: 0, maxT: 1 };
     const allMinT = dayPrices[0].ts;
     const allMaxT = dayPrices[dayPrices.length - 1].ts;
-    const totalRange = allMaxT - allMinT;
-    if (zoomLevel <= 1.0 || totalRange <= 0) {
-      return { data: dayPrices, minT: allMinT, maxT: allMaxT };
+    // When frozen bounds are set, use them directly (view doesn't shift with new data)
+    if (viewMinT !== null && viewMaxT !== null) {
+      const visible = dayPrices.filter(d => d.ts >= viewMinT && d.ts <= viewMaxT);
+      if (visible.length < 2) return { data: dayPrices, minT: allMinT, maxT: allMaxT };
+      return { data: visible, minT: viewMinT, maxT: viewMaxT };
     }
-    const visibleRange = totalRange / zoomLevel;
-    const center = viewCenterTs !== null ? viewCenterTs : allMaxT - visibleRange / 2;
-    let winMin = center - visibleRange / 2;
-    let winMax = center + visibleRange / 2;
-    if (winMin < allMinT) { winMin = allMinT; winMax = allMinT + visibleRange; }
-    if (winMax > allMaxT) { winMax = allMaxT; winMin = allMaxT - visibleRange; }
-    if (winMin < allMinT) winMin = allMinT;
-    const visible = dayPrices.filter(d => d.ts >= winMin && d.ts <= winMax);
-    if (visible.length < 2) return { data: dayPrices, minT: allMinT, maxT: allMaxT };
-    return { data: visible, minT: winMin, maxT: winMax };
+    // No zoom — show everything
+    return { data: dayPrices, minT: allMinT, maxT: allMaxT };
   }
 
   function drawDayChart() {
@@ -669,7 +665,8 @@
     if (wipeBtn) wipeBtn.style.display = mode === "day" ? "" : "none";
     if (mode === "live") {
       zoomLevel = 1.0;
-      viewCenterTs = null;
+      viewMinT = null;
+      viewMaxT = null;
       drawChart();
     } else {
       drawDayChart();
@@ -848,7 +845,7 @@
       if (chartMode === "day") drawDayChart();
     });
 
-    // Scroll-to-zoom on day chart
+    // Scroll-to-zoom on day chart — freezes view bounds
     chartCanvas.addEventListener("wheel", (e) => {
       if (chartMode !== "day" || dayPrices.length < 2) return;
       e.preventDefault();
@@ -856,28 +853,50 @@
       const rm = 38;
       const cw = rect.width - rm;
       const mouseX = e.clientX - rect.left;
-      const { minT: vMinT, maxT: vMaxT } = getVisibleDayWindow();
-      const vRangeT = vMaxT - vMinT;
-      const mouseT = vMinT + (mouseX / cw) * vRangeT;
+      const allMinT = dayPrices[0].ts;
+      const allMaxT = dayPrices[dayPrices.length - 1].ts;
+      const totalRange = allMaxT - allMinT;
+      if (totalRange <= 0) return;
+      // Current visible bounds
+      const curMinT = viewMinT !== null ? viewMinT : allMinT;
+      const curMaxT = viewMaxT !== null ? viewMaxT : allMaxT;
+      const curRange = curMaxT - curMinT;
+      // Timestamp under mouse cursor
+      const mouseT = curMinT + (mouseX / cw) * curRange;
+      // Fraction of view left of cursor (anchor point)
+      const frac = (mouseT - curMinT) / curRange;
+      // Apply zoom
       const zoomFactor = e.deltaY < 0 ? 1.3 : 1 / 1.3;
       const newZoom = Math.max(1.0, Math.min(50.0, zoomLevel * zoomFactor));
-      if (newZoom !== zoomLevel) {
-        viewCenterTs = mouseT;
-        zoomLevel = newZoom;
-        if (zoomLevel <= 1.01) { zoomLevel = 1.0; viewCenterTs = null; }
-        drawDayChart();
+      if (newZoom === zoomLevel) return;
+      zoomLevel = newZoom;
+      if (zoomLevel <= 1.01) {
+        // Fully zoomed out — unfreeze
+        zoomLevel = 1.0;
+        viewMinT = null;
+        viewMaxT = null;
+      } else {
+        // New visible range, anchored at mouse position
+        const newRange = totalRange / zoomLevel;
+        viewMinT = mouseT - frac * newRange;
+        viewMaxT = mouseT + (1 - frac) * newRange;
+        // Clamp to data bounds
+        if (viewMinT < allMinT) { viewMinT = allMinT; viewMaxT = allMinT + newRange; }
+        if (viewMaxT > allMaxT) { viewMaxT = allMaxT; viewMinT = allMaxT - newRange; }
+        if (viewMinT < allMinT) viewMinT = allMinT;
       }
+      drawDayChart();
     }, { passive: false });
 
     // Click-to-mark on day chart
     let mouseDownPos = null;
     chartCanvas.addEventListener("mousedown", (e) => {
       mouseDownPos = { x: e.clientX, y: e.clientY };
-      if (chartMode === "day" && zoomLevel > 1.0) {
+      if (chartMode === "day" && viewMinT !== null) {
         isDragging = true;
         dragStartX = e.clientX;
-        const { minT: vMinT, maxT: vMaxT } = getVisibleDayWindow();
-        dragStartCenter = viewCenterTs || (vMinT + vMaxT) / 2;
+        dragStartMinT = viewMinT;
+        dragStartMaxT = viewMaxT;
         chartCanvas.style.cursor = "grabbing";
       }
     });
@@ -889,11 +908,17 @@
       const cw = rect.width - rm;
       const allMinT = dayPrices[0].ts;
       const allMaxT = dayPrices[dayPrices.length - 1].ts;
-      const totalRange = allMaxT - allMinT;
-      const visibleRange = totalRange / zoomLevel;
+      const visibleRange = dragStartMaxT - dragStartMinT;
       const dx = e.clientX - dragStartX;
       const dtPerPx = visibleRange / cw;
-      viewCenterTs = dragStartCenter - dx * dtPerPx;
+      let newMin = dragStartMinT - dx * dtPerPx;
+      let newMax = dragStartMaxT - dx * dtPerPx;
+      // Clamp to data bounds
+      if (newMin < allMinT) { newMin = allMinT; newMax = allMinT + visibleRange; }
+      if (newMax > allMaxT) { newMax = allMaxT; newMin = allMaxT - visibleRange; }
+      if (newMin < allMinT) newMin = allMinT;
+      viewMinT = newMin;
+      viewMaxT = newMax;
       drawDayChart();
     });
 
@@ -945,7 +970,8 @@
         chartMarkers = [];
         nextMarkerType = "A";
         zoomLevel = 1.0;
-        viewCenterTs = null;
+        viewMinT = null;
+        viewMaxT = null;
         if (chartMode === "day") drawDayChart();
       });
     }
