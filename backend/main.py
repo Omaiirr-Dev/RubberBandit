@@ -224,12 +224,7 @@ async def lifespan(app: FastAPI):
     demo_bot_task = asyncio.create_task(demo_bot_feed())
     print("[Bot] Demo bot started (fake ticks 24/7)")
 
-    # Start AI brain for demo bot if OpenAI key available
-    if OPENAI_API_KEY:
-        ai_brain_demo = AIBrain(OPENAI_API_KEY)
-        demo_bot.ai_enabled = True
-        ai_demo_task = asyncio.create_task(ai_scan_loop(demo_bot, ai_brain_demo, interval=60))
-        print("[AI] Demo bot AI brain started (scanning every 60s)")
+    # Demo bot uses original signal-based trading (no AI, no API cost)
 
     if ALPACA_API_KEY and ALPACA_API_KEY != "your_alpaca_api_key_here":
         try:
