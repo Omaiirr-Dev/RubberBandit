@@ -495,19 +495,44 @@ async def replay_feed(speed: float = 60.0):
     })
 
     # Phase 3: Feed ticks with proportional timing
+    # Fast-forward through OR formation: feed ticks instantly, update UI every 500 ticks
+    or_done = False
     for i, (sim_ts, price, vol) in enumerate(ticks):
         if not replay_active:
             break
 
         demo_bot.add_tick(price, vol, sim_ts)
 
-        # Broadcast every tick (or every Nth tick if too fast)
-        # For real trades that can come in bursts, broadcast at most ~10/sec
+        # Check if OR formation just completed
+        if not or_done:
+            state = demo_bot.get_state()
+            if state.get("or_complete") or state.get("bot_state") not in ("FORMING_OR", "WARMING_UP"):
+                or_done = True
+                print(f"[Replay] OR formation done at tick {i:,}/{total:,} — switching to normal speed")
+
+        # During OR formation: fast-forward (no sleep, sparse UI updates)
+        if not or_done:
+            if i % 500 == 0 or i == 0:
+                elapsed_market = sim_ts - ticks[0][0]
+                await _notify_bot_clients({
+                    "type": "bot_update",
+                    "live": bot.get_state(),
+                    "demo": demo_bot.get_state(),
+                    "replay_ts": int(sim_ts * 1000),
+                    "replay_progress": round((i + 1) / total * 100, 1),
+                    "replay_tick": i + 1,
+                    "replay_total": total,
+                    "replay_market_time": round(elapsed_market / 60, 1),
+                })
+                await asyncio.sleep(0.05)  # tiny yield to keep UI responsive
+            continue
+
+        # Normal playback after OR is formed
         should_broadcast = True
         if i > 0 and source == "trades":
             gap_from_prev = sim_ts - ticks[i - 1][0]
             if gap_from_prev < 0.05 and i % 3 != 0:
-                should_broadcast = False  # throttle burst broadcasts
+                should_broadcast = False
 
         if should_broadcast:
             elapsed_market = sim_ts - ticks[0][0]
