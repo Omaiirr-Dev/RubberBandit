@@ -275,11 +275,15 @@ def generate_demo_context(count: int = 30) -> list:
     return bars
 
 
-async def fetch_day_backfill(ticker: str) -> list:
-    """Fetch 1-min bars since market open (2:30 PM UTC) today."""
+async def fetch_day_backfill(ticker: str, date: datetime = None) -> list:
+    """Fetch 1-min bars since market open for a given date (default: today)."""
+    if date is None:
+        date = datetime.now(timezone.utc)
+    day_open = date.replace(hour=14, minute=30, second=0, microsecond=0)
+    day_close = date.replace(hour=21, minute=0, second=0, microsecond=0)
     now = datetime.now(timezone.utc)
-    today_open = now.replace(hour=14, minute=30, second=0, microsecond=0)
-    if now < today_open:
+    end = min(day_close, now)
+    if end < day_open:
         return []
     url = f"https://data.alpaca.markets/v2/stocks/{ticker}/bars"
     headers = {
@@ -291,8 +295,8 @@ async def fetch_day_backfill(ticker: str) -> list:
     while True:
         params = {
             "timeframe": "1Min",
-            "start": today_open.isoformat(),
-            "end": now.isoformat(),
+            "start": day_open.isoformat(),
+            "end": end.isoformat(),
             "limit": "10000",
             "feed": "iex",
         }
@@ -312,13 +316,18 @@ async def fetch_day_backfill(ticker: str) -> list:
     return all_bars
 
 
-async def fetch_day_trades(ticker: str) -> list:
-    """Fetch ALL real trades since market open from Alpaca.
+async def fetch_day_trades(ticker: str, date: datetime = None) -> list:
+    """Fetch ALL real trades for a given date from Alpaca.
     Returns [(timestamp_seconds, price, volume), ...] — every single tick.
+    If date is None, defaults to today.
     """
     now = datetime.now(timezone.utc)
-    today_open = now.replace(hour=14, minute=30, second=0, microsecond=0)
-    if now < today_open:
+    if date is None:
+        date = now
+    day_open = date.replace(hour=14, minute=30, second=0, microsecond=0)
+    day_close = date.replace(hour=21, minute=0, second=0, microsecond=0)
+    end = min(day_close, now)
+    if end < day_open:
         return []
     url = f"https://data.alpaca.markets/v2/stocks/{ticker}/trades"
     headers = {
@@ -330,8 +339,8 @@ async def fetch_day_trades(ticker: str) -> list:
     page = 0
     while True:
         params = {
-            "start": today_open.isoformat(),
-            "end": now.isoformat(),
+            "start": day_open.isoformat(),
+            "end": end.isoformat(),
             "limit": "10000",
             "feed": "iex",
         }
@@ -362,6 +371,17 @@ async def fetch_day_trades(ticker: str) -> list:
             except Exception:
                 pass
     return all_trades
+
+
+def _last_trading_days(n: int = 5) -> list:
+    """Return the last N weekdays (potential trading days) before today, newest first."""
+    days = []
+    d = datetime.now(timezone.utc).replace(hour=12, minute=0, second=0, microsecond=0)
+    while len(days) < n:
+        d -= timedelta(days=1)
+        if d.weekday() < 5:  # Mon-Fri
+            days.append(d)
+    return days
 
 
 def interpolate_bars_to_ticks(bars: list) -> list:
@@ -402,44 +422,50 @@ async def replay_feed(speed: float = 3.0):
     """
     global replay_active, demo_bot
 
-    # Phase 1: Fetch real trades
-    await _notify_bot_clients({
-        "type": "replay_loading",
-        "status": "Fetching today's trades from Alpaca...",
-    })
-
+    # Phase 1: Fetch real trades — try today first, then recent trading days
     ticks = []
     source = "trades"
-    try:
-        ticks = await fetch_day_trades(TICKER)
-        print(f"[Replay] Fetched {len(ticks):,} real trades")
-    except Exception as e:
-        print(f"[Replay] Trades fetch failed: {e}, falling back to bars")
+    replay_date_label = "today"
 
-    # Fallback: use 1-min bars if trades unavailable
-    if len(ticks) < 100:
-        source = "bars"
+    # Build list of dates to try: today + last 5 weekdays
+    dates_to_try = [datetime.now(timezone.utc)] + _last_trading_days(5)
+
+    for try_date in dates_to_try:
+        date_str = try_date.strftime("%a %b %d")
         await _notify_bot_clients({
             "type": "replay_loading",
-            "status": "Falling back to 1-min bar interpolation...",
+            "status": f"Fetching trades for {date_str}...",
         })
         try:
-            bars = await fetch_day_backfill(TICKER)
-            ticks = interpolate_bars_to_ticks(bars)
-            print(f"[Replay] Interpolated {len(bars)} bars → {len(ticks):,} ticks")
+            ticks = await fetch_day_trades(TICKER, date=try_date)
+            print(f"[Replay] {date_str}: {len(ticks):,} real trades")
         except Exception as e:
-            print(f"[Replay] Bar fetch also failed: {e}")
+            print(f"[Replay] {date_str} trades fetch failed: {e}")
+            ticks = []
+
+        # Fallback to bars for this date
+        if len(ticks) < 100:
+            source = "bars"
             await _notify_bot_clients({
-                "type": "replay_error",
-                "reason": f"Could not fetch market data: {e}",
+                "type": "replay_loading",
+                "status": f"Trying 1-min bars for {date_str}...",
             })
-            replay_active = False
-            return
+            try:
+                bars = await fetch_day_backfill(TICKER, date=try_date)
+                ticks = interpolate_bars_to_ticks(bars)
+                print(f"[Replay] {date_str}: interpolated {len(bars)} bars → {len(ticks):,} ticks")
+            except Exception as e:
+                print(f"[Replay] {date_str} bar fetch also failed: {e}")
+                ticks = []
+
+        if len(ticks) >= 100:
+            replay_date_label = date_str
+            break
 
     if not ticks:
         await _notify_bot_clients({
             "type": "replay_error",
-            "reason": "No market data available for today",
+            "reason": "No market data available for recent trading days",
         })
         replay_active = False
         return
@@ -449,7 +475,7 @@ async def replay_feed(speed: float = 3.0):
     real_duration = ticks[-1][0] - ticks[0][0]
     est_minutes = real_duration / speed / 60
 
-    print(f"[Replay] Starting: {total:,} ticks ({source}), "
+    print(f"[Replay] Starting {replay_date_label}: {total:,} ticks ({source}), "
           f"{real_duration / 60:.0f}min market time at {speed}x → ~{est_minutes:.0f}min replay")
 
     # Phase 2: Reset demo bot and switch to ORB for replay (real market timestamps)
@@ -463,6 +489,7 @@ async def replay_feed(speed: float = 3.0):
         "total_ticks": total,
         "speed": speed,
         "source": source,
+        "replay_date": replay_date_label,
         "market_minutes": round(real_duration / 60, 1),
         "est_replay_minutes": round(est_minutes, 1),
     })
