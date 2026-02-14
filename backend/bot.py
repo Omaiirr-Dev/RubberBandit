@@ -1,17 +1,22 @@
 """
 Autonomous Trading Bot
-- State machine: WARMING_UP → WATCHING → ENTERING → IN_POSITION → EXITING → COOLING_DOWN
-- Conservative mean-reversion scalping using TradingEngine signals
+- Dual strategy: ORB (Opening Range Breakout) for live, Scalp for demo
+- ORB: 60-min opening range → breakout with VWAP + volume confirmation → trailing stop
+- Scalp: Multi-signal mean-reversion with RSI, Bollinger, MACD, VWAP, Fibonacci
+- State machine: WARMING_UP → FORMING_OR/WATCHING → IN_POSITION → EXITING → COOLING_DOWN
 - Realistic: slippage, spread, execution delay, human-speed trading
-- Smart filters: trend (EMA), volume exhaustion, reversal confirmation, momentum reject
 """
 
 import time
+import math
+import json
+import os
 import random
+from datetime import datetime, timezone, timedelta
 from enum import Enum
 from collections import deque
 
-from backend.engine import TradingEngine, DayTracker
+from backend.engine import TradingEngine, DayTracker, OpeningRange
 
 # ---- Strategy Parameters ----
 
@@ -82,6 +87,34 @@ SCORE_VWAP_BELOW = 1
 SCORE_FIB_LEVEL = 1
 SCORE_EMA_DIP = 1
 
+# ---- Machine Learning Constants ----
+ML_LEARNING_RATE = 0.05
+ML_L2_LAMBDA = 0.001              # L2 regularization strength
+ML_MIN_TRADES = 10                # trades needed before ML influences decisions
+ML_SCORE_BONUS = 2                # max entry score bonus from ML
+ML_CONFIDENCE_GATE = 0.65         # ML must be >65% confident to add bonus
+ML_VETO_THRESHOLD = 0.30          # ML <30% confidence = subtract a point
+ADAPTIVE_EXIT_MIN_TRADES = 15     # trades before adaptive exits kick in
+ADAPTIVE_TP_RANGE = (2.0, 8.0)    # take profit adapts between $2-$8
+ADAPTIVE_SL_RANGE = (-8.0, -2.0)  # stop loss adapts between -$8 to -$2
+ADAPTIVE_HOLD_RANGE = (20, 90)    # max hold adapts between 20-90s
+ML_SAVE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ml_brain.json")
+
+# ---- ORB (Opening Range Breakout) Strategy Parameters ----
+ORB_DURATION_SECONDS = 3600       # 60-minute opening range
+ORB_RISK_PCT = 0.01               # 1% of capital risked per trade
+ORB_ATR_TRAILING_MULT = 2.0       # trailing stop = max_price - 2.0 × ATR
+ORB_PARTIAL_EXIT_RATIO = 0.50     # sell 50% at first target
+ORB_PARTIAL_RR_TARGET = 1.5       # first target at 1.5× risk distance
+ORB_RVOL_THRESHOLD = 1.5          # need 1.5× session avg volume for entry
+ORB_EOD_EXIT_HOUR = 15            # 3:45 PM ET (hour)
+ORB_EOD_EXIT_MINUTE = 45          # 3:45 PM ET (minute)
+ORB_COOLDOWN_SECONDS = 30         # 30s cooldown between ORB trades
+ORB_MAX_TRADES_PER_DAY = 3        # max 3 ORB trades per session
+ORB_WARMUP_SECONDS = 10           # minimal warmup for ORB mode
+ORB_MIN_RANGE = 0.10              # minimum OR range in dollars (skip if too tight)
+_ET = timezone(timedelta(hours=-5))  # US Eastern timezone
+
 # ---- Smart Filter Parameters ----
 
 # Trend filter: EMA crossover
@@ -100,8 +133,197 @@ VOLUME_RECENT = 8            # last N ticks (recent)
 VOLUME_PRIOR = 20            # prior N ticks (compare against)
 
 
+class MLBrain:
+    """
+    Online-learning ML brain for trading decisions.
+    - Logistic regression predicts trade win probability from indicator features
+    - Trains after every completed trade (online SGD)
+    - Adapts exit thresholds (TP/SL/hold time) from rolling trade statistics
+    - Persists learned weights to disk for cross-session learning
+    """
+
+    NUM_FEATURES = 9
+    FEATURE_NAMES = [
+        "rsi", "bb_pos", "macd", "vwap_dist", "ema_gap",
+        "score", "trend", "upticks", "momentum"
+    ]
+
+    def __init__(self, persist_path=None):
+        # Entry prediction model (logistic regression)
+        self.weights = [0.0] * self.NUM_FEATURES
+        self.bias = 0.0
+        self.trade_count = 0
+        self.win_count = 0
+        self.recent_accuracy = deque(maxlen=50)
+
+        # Adaptive exit thresholds (learned from trade history)
+        self.adaptive_tp = TAKE_PROFIT_DOLLARS
+        self.adaptive_sl = STOP_LOSS_DOLLARS
+        self.adaptive_max_hold = float(PAT_MAX_HOLD_SECONDS)
+
+        # Rolling P&L / hold-time tracking for exit learning
+        self.win_pnls = deque(maxlen=50)
+        self.loss_pnls = deque(maxlen=50)
+        self.win_holds = deque(maxlen=50)
+        self.loss_holds = deque(maxlen=50)
+
+        # Pending (in-flight trade features)
+        self.pending_features = None
+        self.pending_prediction = 0.5
+
+        # Persistence
+        self.persist_path = persist_path
+        if persist_path:
+            self._load()
+
+    @staticmethod
+    def _sigmoid(x):
+        x = max(-500.0, min(500.0, x))
+        return 1.0 / (1.0 + math.exp(-x))
+
+    def predict(self, features):
+        """Predict probability of profitable trade (0-1)."""
+        z = self.bias + sum(w * f for w, f in zip(self.weights, features))
+        return self._sigmoid(z)
+
+    def train_entry(self, features, won):
+        """Train entry model on completed trade outcome via online SGD."""
+        label = 1.0 if won else 0.0
+        pred = self.predict(features)
+        error = label - pred
+
+        # Decaying learning rate
+        lr = ML_LEARNING_RATE / (1.0 + self.trade_count * 0.001)
+        for i in range(self.NUM_FEATURES):
+            self.weights[i] += lr * (error * features[i] - ML_L2_LAMBDA * self.weights[i])
+        self.bias += lr * error
+
+        self.trade_count += 1
+        if won:
+            self.win_count += 1
+
+        correct = (pred >= 0.5 and won) or (pred < 0.5 and not won)
+        self.recent_accuracy.append(1 if correct else 0)
+
+    def train_exit(self, pnl, hold_time, won):
+        """Update adaptive exit thresholds from trade result."""
+        if won:
+            self.win_pnls.append(pnl)
+            self.win_holds.append(hold_time)
+        else:
+            self.loss_pnls.append(pnl)
+            self.loss_holds.append(hold_time)
+
+        # Recalculate adaptive take profit: 80th percentile of winning P&Ls
+        if len(self.win_pnls) >= 5:
+            sorted_wins = sorted(self.win_pnls)
+            idx = min(int(len(sorted_wins) * 0.8), len(sorted_wins) - 1)
+            target_tp = sorted_wins[idx]
+            self.adaptive_tp = max(ADAPTIVE_TP_RANGE[0], min(ADAPTIVE_TP_RANGE[1], target_tp))
+
+        # Adaptive stop loss: 80th percentile of losses (tighten over time)
+        if len(self.loss_pnls) >= 5:
+            sorted_losses = sorted(self.loss_pnls, reverse=True)
+            idx = min(int(len(sorted_losses) * 0.8), len(sorted_losses) - 1)
+            target_sl = sorted_losses[idx]
+            self.adaptive_sl = max(ADAPTIVE_SL_RANGE[0], min(ADAPTIVE_SL_RANGE[1], target_sl))
+
+        # Adaptive max hold: 1.5x average winning hold time
+        if len(self.win_holds) >= 5:
+            avg_win_hold = sum(self.win_holds) / len(self.win_holds)
+            self.adaptive_max_hold = max(
+                ADAPTIVE_HOLD_RANGE[0],
+                min(ADAPTIVE_HOLD_RANGE[1], avg_win_hold * 1.5)
+            )
+
+    @property
+    def is_ready(self):
+        return self.trade_count >= ML_MIN_TRADES
+
+    @property
+    def accuracy(self):
+        if not self.recent_accuracy:
+            return 0.5
+        return sum(self.recent_accuracy) / len(self.recent_accuracy)
+
+    @property
+    def win_rate(self):
+        if self.trade_count == 0:
+            return 0.0
+        return self.win_count / self.trade_count
+
+    def save(self):
+        if not self.persist_path:
+            return
+        try:
+            data = {
+                "weights": self.weights,
+                "bias": self.bias,
+                "trade_count": self.trade_count,
+                "win_count": self.win_count,
+                "adaptive_tp": self.adaptive_tp,
+                "adaptive_sl": self.adaptive_sl,
+                "adaptive_max_hold": self.adaptive_max_hold,
+                "win_pnls": list(self.win_pnls),
+                "loss_pnls": list(self.loss_pnls),
+                "win_holds": list(self.win_holds),
+                "loss_holds": list(self.loss_holds),
+            }
+            with open(self.persist_path, "w") as f:
+                json.dump(data, f, indent=2)
+        except Exception:
+            pass
+
+    def _load(self):
+        if not self.persist_path or not os.path.exists(self.persist_path):
+            return
+        try:
+            with open(self.persist_path, "r") as f:
+                data = json.load(f)
+            self.weights = data.get("weights", self.weights)
+            self.bias = data.get("bias", 0.0)
+            self.trade_count = data.get("trade_count", 0)
+            self.win_count = data.get("win_count", 0)
+            self.adaptive_tp = data.get("adaptive_tp", TAKE_PROFIT_DOLLARS)
+            self.adaptive_sl = data.get("adaptive_sl", STOP_LOSS_DOLLARS)
+            self.adaptive_max_hold = data.get("adaptive_max_hold", float(PAT_MAX_HOLD_SECONDS))
+            for p in data.get("win_pnls", []):
+                self.win_pnls.append(p)
+            for p in data.get("loss_pnls", []):
+                self.loss_pnls.append(p)
+            for h in data.get("win_holds", []):
+                self.win_holds.append(h)
+            for h in data.get("loss_holds", []):
+                self.loss_holds.append(h)
+            if self.trade_count > 0:
+                print(f"[ML] Loaded brain: {self.trade_count} trades, "
+                      f"{self.win_rate:.0%} win rate, TP=${self.adaptive_tp:.2f}, "
+                      f"SL=${self.adaptive_sl:.2f}")
+        except Exception:
+            pass  # corrupt file, start fresh
+
+    def reset_learning(self):
+        """Full reset — wipe all learned weights and history."""
+        self.weights = [0.0] * self.NUM_FEATURES
+        self.bias = 0.0
+        self.trade_count = 0
+        self.win_count = 0
+        self.recent_accuracy.clear()
+        self.win_pnls.clear()
+        self.loss_pnls.clear()
+        self.win_holds.clear()
+        self.loss_holds.clear()
+        self.adaptive_tp = TAKE_PROFIT_DOLLARS
+        self.adaptive_sl = STOP_LOSS_DOLLARS
+        self.adaptive_max_hold = float(PAT_MAX_HOLD_SECONDS)
+        self.pending_features = None
+        self.pending_prediction = 0.5
+        self.save()
+
+
 class BotState(str, Enum):
     WARMING_UP = "WARMING_UP"
+    FORMING_OR = "FORMING_OR"      # ORB: collecting 60-min opening range
     WATCHING = "WATCHING"
     ENTERING = "ENTERING"
     IN_POSITION = "IN_POSITION"
@@ -110,13 +332,18 @@ class BotState(str, Enum):
 
 
 class TradingBot:
-    def __init__(self, demo: bool = False):
+    def __init__(self, demo: bool = False, strategy: str = "scalp"):
         self.engine = TradingEngine()
         self.engine.spread = SPREAD_PER_SHARE
         self.day_tracker = DayTracker()
 
         self.demo = demo
-        self.warmup_seconds = WARMUP_SECONDS_DEMO if demo else WARMUP_SECONDS
+        self.strategy = strategy
+
+        if strategy == "orb":
+            self.warmup_seconds = ORB_WARMUP_SECONDS
+        else:
+            self.warmup_seconds = WARMUP_SECONDS_DEMO if demo else WARMUP_SECONDS
 
         self.state = BotState.WARMING_UP
         self.cash = STARTING_CASH
@@ -191,6 +418,23 @@ class TradingBot:
         self.last_signal_score = 0
         self.last_signal_parts = {}
 
+        # Machine learning brain (persist only for live bot)
+        ml_path = None if demo else ML_SAVE_PATH
+        self.ml = MLBrain(persist_path=ml_path)
+
+        # ---- ORB strategy state ----
+        self.opening_range = OpeningRange(ORB_DURATION_SECONDS)
+        self.orb_phase = "FORMING"          # FORMING → READY → ACTIVE → EOD
+        self.orb_entry_stop_loss = 0.0      # OR low (absolute price)
+        self.orb_trailing_stop = 0.0        # ATR-based trailing stop
+        self.orb_max_price_since_entry = 0.0
+        self.orb_partial_sold = False       # have we taken partial profits?
+        self.orb_original_shares = 0.0      # shares at entry (before partial sell)
+        self.orb_original_cash = 0.0        # cash used at entry (before partial sell)
+        self.orb_risk_per_share = 0.0       # entry_price - stop_loss
+        self.orb_trades_today = 0
+        self.last_volume = 1.0              # last tick volume (for RVOL check)
+
     def add_tick(self, price: float, volume: float = 1.0, timestamp: float = None):
         now = timestamp or time.time()
 
@@ -200,8 +444,12 @@ class TradingBot:
 
         self.last_tick_time = now
         self.tick_count += 1
+        self.last_volume = volume
         self.engine.add_tick(price, volume, now)
         self.day_tracker.add_tick(price, now)
+
+        # Always feed opening range (tracks OR regardless of strategy)
+        self.opening_range.add_tick(price, volume, now)
 
         # Update smart filter trackers
         self._update_ema(price)
@@ -335,6 +583,55 @@ class TradingBot:
         self.macd_signal_ema = self.macd_line * k_sig + self.macd_signal_ema * (1 - k_sig)
         self.macd_histogram = self.macd_line - self.macd_signal_ema
 
+    # ---- ML feature extraction ----
+
+    def _extract_features(self, price: float) -> list:
+        """Build normalized 0-1 feature vector for ML model."""
+        features = [0.5] * MLBrain.NUM_FEATURES
+
+        # 0: RSI (0-1, lower = more oversold)
+        if self.rsi_ready:
+            features[0] = self.rsi_value / 100.0
+
+        # 1: Bollinger position (0=lower band, 1=upper band)
+        if self.bb_ready and self.bb_upper > self.bb_lower:
+            features[1] = max(0.0, min(1.0,
+                (price - self.bb_lower) / (self.bb_upper - self.bb_lower)))
+
+        # 2: MACD histogram (sigmoid-normalized)
+        if self.macd_ready:
+            features[2] = MLBrain._sigmoid(self.macd_histogram * 500)
+
+        # 3: VWAP distance (higher = more below VWAP = bullish)
+        vwap = self.engine.vwap
+        if vwap > 0 and price > 0:
+            dist = (vwap - price) / price
+            features[3] = max(0.0, min(1.0, dist * 50 + 0.5))
+
+        # 4: EMA gap (higher = more below EMA = dip)
+        if self.pattern_ema > 0 and price > 0:
+            gap = (self.pattern_ema - price) / price
+            features[4] = max(0.0, min(1.0, gap * 50 + 0.5))
+
+        # 5: Multi-signal score (0-1)
+        features[5] = self.last_signal_score / 7.0
+
+        # 6: Trend (1 = uptrend, 0 = downtrend)
+        if self.ema_initialized:
+            features[6] = 1.0 if self.ema_fast >= self.ema_slow else 0.0
+
+        # 7: Uptick momentum (0-1, capped at 5)
+        features[7] = min(self.consecutive_up, 5) / 5.0
+
+        # 8: Recent price momentum (last 10 ticks direction)
+        if len(self.price_history) >= 10:
+            recent = [p for _, p in list(self.price_history)[-10:]]
+            if recent[0] > 0:
+                mom = (recent[-1] - recent[0]) / recent[0]
+                features[8] = max(0.0, min(1.0, mom * 100 + 0.5))
+
+        return features
+
     # ---- Smart filter checks ----
 
     def _check_trend(self) -> bool:
@@ -432,6 +729,18 @@ class TradingBot:
             score += SCORE_EMA_DIP
             parts["EMA"] = round(ema_gap, 3)
 
+        # ML bonus / veto (only after enough training data)
+        if self.ml.is_ready:
+            ml_features = self._extract_features(price)
+            ml_pred = self.ml.predict(ml_features)
+            self.ml.pending_prediction = ml_pred
+            if ml_pred >= ML_CONFIDENCE_GATE:
+                score += ML_SCORE_BONUS
+                parts["ML"] = round(ml_pred, 2)
+            elif ml_pred < ML_VETO_THRESHOLD:
+                score = max(0, score - 1)
+                parts["ML_VETO"] = round(ml_pred, 2)
+
         self.last_signal_score = score
         self.last_signal_parts = parts
 
@@ -481,6 +790,14 @@ class TradingBot:
         return random.uniform(SLIPPAGE_BASE_MIN, SLIPPAGE_BASE_MAX)
 
     def _run_state_machine(self, price: float, now: float):
+        """Dispatch to the appropriate strategy state machine."""
+        if self.strategy == "orb":
+            self._run_orb_state_machine(price, now)
+        else:
+            self._run_scalp_state_machine(price, now)
+
+    def _run_scalp_state_machine(self, price: float, now: float):
+        """Original mean-reversion scalp strategy state machine."""
         elapsed = now - self.state_entered_at
 
         if self.state == BotState.WARMING_UP:
@@ -491,7 +808,6 @@ class TradingBot:
             watching_time = now - self.state_entered_at
             self.pattern_status = "SCAN"
 
-            # Need minimum observation time before first entry
             if watching_time < PATTERN_WATCH_SEC:
                 self.pattern_reason = f"Scanning... ({watching_time:.0f}/{PATTERN_WATCH_SEC}s)"
                 return
@@ -500,7 +816,6 @@ class TradingBot:
                 self.pattern_reason = "Insufficient cash"
                 return
 
-            # Multi-signal entry: RSI + Bollinger + MACD + VWAP + Fib + EMA
             if self._check_multi_signal_entry(price, now):
                 print(f"[Bot] SIGNAL BUY: {self.pattern_reason}, price=${price:.2f}")
                 self.pattern_status = "BUY"
@@ -519,28 +834,26 @@ class TradingBot:
             hold_time = now - self.position_entry_time
             dollar_pnl = (price - self.position_entry_price) * self.position_shares
 
+            use_adaptive = self.ml.trade_count >= ADAPTIVE_EXIT_MIN_TRADES
+            tp_thresh = self.ml.adaptive_tp if use_adaptive else TAKE_PROFIT_DOLLARS
+            sl_thresh = self.ml.adaptive_sl if use_adaptive else STOP_LOSS_DOLLARS
+            hold_limit = self.ml.adaptive_max_hold if use_adaptive else PAT_MAX_HOLD_SECONDS
+
             exit_reason = None
 
-            # Hard take profit — lock in gains
-            if dollar_pnl >= TAKE_PROFIT_DOLLARS:
+            if dollar_pnl >= tp_thresh:
                 exit_reason = "TAKE_PROFIT"
-
-            # EMA crossover exit: price reverted back to mean
             elif (price >= self.pattern_ema
                     and hold_time >= PATTERN_MIN_HOLD_EXIT
                     and dollar_pnl > 0):
                 exit_reason = "EMA_CROSS"
-
-            # Indicator-based exit: 2+ bearish signals while profitable
             elif hold_time >= PATTERN_MIN_HOLD_EXIT and dollar_pnl > 0:
                 if self._check_indicator_exit(price) >= EXIT_INDICATOR_SCORE:
                     exit_reason = "INDICATOR_EXIT"
 
-            # Hard stop loss (always overrides)
-            if dollar_pnl <= STOP_LOSS_DOLLARS:
+            if dollar_pnl <= sl_thresh:
                 exit_reason = "STOP_LOSS"
-            # Time limit
-            elif hold_time >= PAT_MAX_HOLD_SECONDS and exit_reason is None:
+            elif hold_time >= hold_limit and exit_reason is None:
                 exit_reason = "TIME_LIMIT"
 
             if exit_reason:
@@ -559,11 +872,227 @@ class TradingBot:
             if elapsed >= COOLDOWN_SECONDS:
                 self._transition(BotState.WATCHING, now)
 
+    # ---- ORB Strategy State Machine ----
+
+    def _is_past_eod(self, now: float) -> bool:
+        """Check if current time is past end-of-day exit time (3:45 PM ET)."""
+        dt = datetime.fromtimestamp(now, tz=_ET)
+        return (dt.hour > ORB_EOD_EXIT_HOUR or
+                (dt.hour == ORB_EOD_EXIT_HOUR and dt.minute >= ORB_EOD_EXIT_MINUTE))
+
+    def _check_orb_entry(self, price: float, now: float) -> bool:
+        """Check all ORB breakout entry conditions."""
+        orng = self.opening_range
+
+        # Must have a valid opening range
+        if orng.or_range < ORB_MIN_RANGE:
+            self.pattern_reason = f"OR range too tight (${orng.or_range:.2f} < ${ORB_MIN_RANGE})"
+            return False
+
+        # 1. Price must break above OR High
+        if price <= orng.or_high:
+            self.pattern_reason = (
+                f"Waiting for breakout above ${orng.or_high:.2f} "
+                f"(price=${price:.2f}, gap=${orng.or_high - price:.2f})"
+            )
+            self.pattern_confidence = 0.0
+            return False
+
+        parts = {}
+        parts["ORB"] = round(orng.or_high, 2)
+
+        # 2. VWAP confirmation: price must be above VWAP
+        vwap = self.engine.vwap
+        if vwap > 0 and price <= vwap:
+            self.pattern_reason = f"Breakout but below VWAP (${vwap:.2f})"
+            self.pattern_confidence = 0.2
+            return False
+        parts["VWAP"] = round(vwap, 2)
+
+        # 3. Volume surge: RVOL > threshold
+        avg_vol = self.engine.avg_tick_volume
+        rvol = self.last_volume / avg_vol if avg_vol > 0 else 1.0
+        if rvol < ORB_RVOL_THRESHOLD:
+            self.pattern_reason = f"Low volume (RVOL={rvol:.1f}x < {ORB_RVOL_THRESHOLD}x)"
+            self.pattern_confidence = 0.3
+            return False
+        parts["RVOL"] = round(rvol, 1)
+
+        # 4. Indicator confirmation (optional boosters, not gates)
+        confirms = 0
+        if self.rsi_ready and self.rsi_value < RSI_OVERBOUGHT:
+            confirms += 1
+            parts["RSI"] = round(self.rsi_value, 0)
+        if self.macd_ready and self.macd_histogram > 0:
+            confirms += 1
+            parts["MACD"] = "bull"
+        if self.consecutive_up >= 2:
+            confirms += 1
+            parts["UPTICK"] = self.consecutive_up
+
+        # All core conditions met
+        signals = ', '.join(f"{k}={v}" for k, v in parts.items())
+        self.pattern_reason = f"ORB BREAKOUT [{signals}]"
+        self.pattern_confidence = min(1.0, 0.5 + confirms * 0.15)
+        return True
+
+    def _calculate_orb_position_size(self, price: float) -> float:
+        """Calculate shares using 1% risk rule: Q = (Capital × Risk%) / (Entry - StopLoss)."""
+        stop_price = self.opening_range.or_low
+        risk_per_share = price - stop_price
+        if risk_per_share <= 0:
+            return 0.0
+
+        self.orb_risk_per_share = risk_per_share
+        risk_capital = self.cash * ORB_RISK_PCT
+        shares = risk_capital / risk_per_share
+
+        # Never buy more than we can afford
+        max_shares = self.cash / price
+        shares = min(shares, max_shares)
+        return max(1.0, shares)
+
+    def _run_orb_state_machine(self, price: float, now: float):
+        """Opening Range Breakout strategy state machine."""
+        elapsed = now - self.state_entered_at
+
+        if self.state == BotState.WARMING_UP:
+            if (now - self.first_tick_time) >= self.warmup_seconds:
+                self._transition(BotState.FORMING_OR, now)
+
+        elif self.state == BotState.FORMING_OR:
+            self.pattern_status = "FORMING"
+            orng = self.opening_range
+
+            if orng.is_complete:
+                self.orb_phase = "READY"
+                or_h = orng.or_high
+                or_l = orng.or_low if orng.or_low != float("inf") else 0
+                print(f"[ORB] Opening range complete: H=${or_h:.2f} L=${or_l:.2f} "
+                      f"range=${orng.or_range:.2f} ({orng.or_tick_count} ticks)")
+                self.pattern_reason = (
+                    f"OR set: H=${or_h:.2f} L=${or_l:.2f} range=${orng.or_range:.2f}"
+                )
+                self._transition(BotState.WATCHING, now)
+            else:
+                mins = orng.elapsed_minutes(now)
+                or_h = orng.or_high if orng.or_high > 0 else 0
+                or_l = orng.or_low if orng.or_low != float("inf") else 0
+                self.pattern_reason = (
+                    f"OR forming: H=${or_h:.2f} L=${or_l:.2f} "
+                    f"({mins:.0f}/60 min, {orng.or_tick_count} ticks)"
+                )
+                self.pattern_confidence = min(1.0, mins / 60.0)
+
+        elif self.state == BotState.WATCHING:
+            self.pattern_status = "SCAN"
+            self.orb_phase = "READY"
+
+            # EOD check: don't enter new trades near close
+            if self._is_past_eod(now):
+                self.pattern_reason = "Past EOD cutoff (3:45 PM ET)"
+                self.orb_phase = "EOD"
+                return
+
+            # Max daily trades check
+            if self.orb_trades_today >= ORB_MAX_TRADES_PER_DAY:
+                self.pattern_reason = f"Max trades reached ({self.orb_trades_today}/{ORB_MAX_TRADES_PER_DAY})"
+                return
+
+            if self.cash <= 100:
+                self.pattern_reason = "Insufficient cash"
+                return
+
+            # Check ORB breakout entry conditions
+            if self._check_orb_entry(price, now):
+                shares = self._calculate_orb_position_size(price)
+                if shares <= 0:
+                    self.pattern_reason = "Position size too small"
+                    return
+
+                print(f"[ORB] BREAKOUT BUY: {self.pattern_reason}, "
+                      f"price=${price:.2f}, shares={shares:.1f}, "
+                      f"stop=${self.opening_range.or_low:.2f}")
+                self.pattern_status = "BUY"
+                self.orb_phase = "ACTIVE"
+                self._execute_orb_buy(price, now, shares)
+                self._transition(BotState.IN_POSITION, now)
+
+        elif self.state == BotState.IN_POSITION:
+            if self.position_entry_price <= 0:
+                self._transition(BotState.WATCHING, now)
+                return
+
+            hold_time = now - self.position_entry_time
+            dollar_pnl = (price - self.position_entry_price) * self.position_shares
+
+            # Update max price for trailing stop
+            if price > self.orb_max_price_since_entry:
+                self.orb_max_price_since_entry = price
+
+            # Update trailing stop: max_price - ATR_mult × ATR
+            if self.engine.atr_ready and self.engine.atr_value > 0:
+                new_trail = self.orb_max_price_since_entry - ORB_ATR_TRAILING_MULT * self.engine.atr_value
+                if new_trail > self.orb_trailing_stop:
+                    self.orb_trailing_stop = new_trail
+
+            exit_reason = None
+
+            # Priority 1: EOD exit (absolute — sell everything)
+            if self._is_past_eod(now):
+                exit_reason = "EOD_EXIT"
+
+            # Priority 2: Hard stop loss (price fell below OR low)
+            elif price <= self.orb_entry_stop_loss:
+                exit_reason = "ORB_STOP"
+
+            # Priority 3: Trailing stop
+            elif self.orb_trailing_stop > 0 and price <= self.orb_trailing_stop:
+                exit_reason = "TRAILING_STOP"
+
+            # Priority 4: Partial take profit (sell 50% at 1.5× risk)
+            elif not self.orb_partial_sold and self.orb_risk_per_share > 0:
+                target = self.position_entry_price + self.orb_risk_per_share * ORB_PARTIAL_RR_TARGET
+                if price >= target:
+                    self._execute_partial_sell(price, now, ORB_PARTIAL_EXIT_RATIO)
+                    # Move stop to breakeven for remainder
+                    self.orb_entry_stop_loss = self.position_entry_price
+                    self.orb_trailing_stop = max(self.orb_trailing_stop, self.position_entry_price)
+                    self.orb_partial_sold = True
+                    print(f"[ORB] PARTIAL TP: sold 50% at ${price:.2f}, "
+                          f"stop moved to breakeven ${self.position_entry_price:.2f}")
+
+            # Priority 5: Indicator-based exit (bearish divergence)
+            if exit_reason is None and hold_time >= PATTERN_MIN_HOLD_EXIT and dollar_pnl > 0:
+                if self._check_indicator_exit(price) >= EXIT_INDICATOR_SCORE:
+                    exit_reason = "INDICATOR_EXIT"
+
+            if exit_reason:
+                self.exit_reason = exit_reason
+                self.exec_delay = random.uniform(EXEC_DELAY_MIN, EXEC_DELAY_MAX)
+                self._transition(BotState.EXITING, now)
+
+        elif self.state == BotState.EXITING:
+            if elapsed >= self.exec_delay:
+                self._execute_sell(price, now)
+                self.orb_trades_today += 1
+                self.pattern_status = "WAIT"
+                self.pattern_reason = "Cooling down..."
+                self._transition(BotState.COOLING_DOWN, now)
+
+        elif self.state == BotState.COOLING_DOWN:
+            cooldown = ORB_COOLDOWN_SECONDS if self.strategy == "orb" else COOLDOWN_SECONDS
+            if elapsed >= cooldown:
+                self._transition(BotState.WATCHING, now)
+
     def _transition(self, new_state: BotState, now: float):
         self.state = new_state
         self.state_entered_at = now
 
     def _execute_buy(self, current_price: float, now: float):
+        # Capture ML features at entry for post-trade training
+        self.ml.pending_features = self._extract_features(current_price)
+
         slippage = self._calculate_slippage()
         fill_price = current_price + slippage
 
@@ -578,6 +1107,75 @@ class TradingBot:
         self.cash = 0.0
 
         self.engine.set_entry(fill_price)
+
+    def _execute_orb_buy(self, current_price: float, now: float, shares: float):
+        """Execute buy with specific share count (ORB position sizing)."""
+        self.ml.pending_features = self._extract_features(current_price)
+
+        slippage = self._calculate_slippage()
+        fill_price = current_price + slippage
+
+        position_cash = shares * fill_price
+        if position_cash > self.cash:
+            shares = self.cash / fill_price
+            position_cash = self.cash
+
+        self.position_shares = shares
+        self.position_entry_price = fill_price
+        self.position_cash_used = position_cash
+        self.position_entry_time = now
+        self.cash -= position_cash
+
+        # ORB tracking
+        self.orb_entry_stop_loss = self.opening_range.or_low
+        self.orb_trailing_stop = 0.0
+        self.orb_max_price_since_entry = fill_price
+        self.orb_partial_sold = False
+        self.orb_original_shares = shares
+        self.orb_original_cash = position_cash
+
+        self.engine.set_entry(fill_price)
+        print(f"[ORB] BUY: {shares:.1f} shares @ ${fill_price:.2f}, "
+              f"cash used=${position_cash:.2f}, stop=${self.orb_entry_stop_loss:.2f}")
+
+    def _execute_partial_sell(self, current_price: float, now: float, fraction: float):
+        """Sell a fraction of the position (e.g., 50% for partial take profit)."""
+        slippage = self._calculate_slippage()
+        fill_price = current_price - slippage
+
+        sell_shares = self.position_shares * fraction
+        proceeds = sell_shares * fill_price
+        spread_cost = SPREAD_PER_SHARE * sell_shares
+        net_proceeds = proceeds - spread_cost
+
+        # Proportional cost basis
+        cost_fraction = sell_shares / self.orb_original_shares if self.orb_original_shares > 0 else fraction
+        partial_cost = self.orb_original_cash * cost_fraction
+        net_pnl = net_proceeds - partial_cost
+        pnl_pct = (net_pnl / partial_cost) * 100 if partial_cost > 0 else 0
+        hold_time = now - self.position_entry_time
+
+        trade = {
+            "id": len(self.trades) + 1,
+            "entry_price": round(self.position_entry_price, 4),
+            "exit_price": round(fill_price, 4),
+            "shares": round(sell_shares, 2),
+            "entry_time": self.position_entry_time,
+            "exit_time": now,
+            "hold_seconds": round(hold_time, 1),
+            "pnl": round(net_pnl, 2),
+            "pnl_pct": round(pnl_pct, 4),
+            "exit_reason": "PARTIAL_TP",
+            "position_cash": round(partial_cost, 2),
+        }
+        self.trades.append(trade)
+        print(f"[Bot] PARTIAL SELL #{trade['id']}: {sell_shares:.1f} shares, "
+              f"P&L=${net_pnl:.2f}")
+
+        # Update position: reduce shares and adjust cost basis
+        self.position_shares -= sell_shares
+        self.position_cash_used -= partial_cost
+        self.cash += net_proceeds
 
     def _execute_sell(self, current_price: float, now: float):
         slippage = self._calculate_slippage()
@@ -607,6 +1205,17 @@ class TradingBot:
         self.trades.append(trade)
         print(f"[Bot] SELL #{trade['id']}: {self.exit_reason}, P&L=${net_pnl:.2f}, cash after=${net_proceeds:.2f}")
 
+        # Train ML brain on this trade outcome
+        won = net_pnl > 0
+        if self.ml.pending_features is not None:
+            self.ml.train_entry(self.ml.pending_features, won)
+            self.ml.train_exit(net_pnl, hold_time, won)
+            self.ml.pending_features = None
+            self.ml.save()
+            print(f"[ML] Trade #{trade['id']}: {'WIN' if won else 'LOSS'} | "
+                  f"accuracy={self.ml.accuracy:.0%} | "
+                  f"TP=${self.ml.adaptive_tp:.2f} SL=${self.ml.adaptive_sl:.2f}")
+
         self.cash = net_proceeds
 
         # Clear position
@@ -633,12 +1242,15 @@ class TradingBot:
         total_value = self.cash + (self.position_shares * price if self.position_shares > 0 and price > 0 else 0)
         total_pnl = total_value - self.starting_cash
 
-        # Warmup progress (use last_tick_time for accurate replay support)
+        # Warmup / OR formation progress
         warmup_pct = 0
         if self.state == BotState.WARMING_UP and self.first_tick_time:
             ref_time = self.last_tick_time or time.time()
             elapsed = ref_time - self.first_tick_time
             warmup_pct = min(100, int((elapsed / self.warmup_seconds) * 100))
+        elif self.state == BotState.FORMING_OR and self.last_tick_time:
+            mins = self.opening_range.elapsed_minutes(self.last_tick_time)
+            warmup_pct = min(100, int((mins / 60.0) * 100))
 
         # Trend indicator for frontend
         trend = "up" if self.ema_fast >= self.ema_slow else "down"
@@ -682,6 +1294,27 @@ class TradingBot:
             "macd_signal": round(self.macd_signal_ema, 4),
             "macd_histogram": round(self.macd_histogram, 4),
             "multi_score": self.last_signal_score,
+            "ml_ready": self.ml.is_ready,
+            "ml_trades": self.ml.trade_count,
+            "ml_accuracy": round(self.ml.accuracy * 100, 1),
+            "ml_win_rate": round(self.ml.win_rate * 100, 1),
+            "ml_prediction": round(self.ml.pending_prediction, 2),
+            "ml_adaptive_tp": round(self.ml.adaptive_tp, 2),
+            "ml_adaptive_sl": round(self.ml.adaptive_sl, 2),
+            "ml_adaptive_hold": round(self.ml.adaptive_max_hold, 1),
+            # ORB strategy fields
+            "strategy": self.strategy,
+            "orb_phase": self.orb_phase,
+            "or_high": round(self.opening_range.or_high, 4) if self.opening_range.or_high > 0 else None,
+            "or_low": round(self.opening_range.or_low, 4) if self.opening_range.or_low != float("inf") else None,
+            "or_complete": self.opening_range.is_complete,
+            "or_range": round(self.opening_range.or_range, 4),
+            "trailing_stop": round(self.orb_trailing_stop, 4) if self.orb_trailing_stop > 0 else None,
+            "orb_stop_loss": round(self.orb_entry_stop_loss, 4) if self.orb_entry_stop_loss > 0 else None,
+            "atr": round(self.engine.atr_value, 4),
+            "atr_ready": self.engine.atr_ready,
+            "orb_trades_today": self.orb_trades_today,
+            "partial_sold": self.orb_partial_sold,
         }
 
     def get_all_trades(self) -> list:
@@ -744,3 +1377,18 @@ class TradingBot:
         self.macd_ready = False
         self.last_signal_score = 0
         self.last_signal_parts = {}
+        # Reset ML pending state (keep learned weights — they persist across resets)
+        self.ml.pending_features = None
+        self.ml.pending_prediction = 0.5
+        # Reset ORB state
+        self.opening_range.reset()
+        self.orb_phase = "FORMING"
+        self.orb_entry_stop_loss = 0.0
+        self.orb_trailing_stop = 0.0
+        self.orb_max_price_since_entry = 0.0
+        self.orb_partial_sold = False
+        self.orb_original_shares = 0.0
+        self.orb_original_cash = 0.0
+        self.orb_risk_per_share = 0.0
+        self.orb_trades_today = 0
+        self.last_volume = 1.0

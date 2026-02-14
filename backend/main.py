@@ -43,8 +43,8 @@ alpaca_task = None
 demo_clients: dict[WebSocket, dict] = {}
 
 # ---- Bot Trading ----
-bot = TradingBot()                  # live bot (fed by Alpaca ticks)
-demo_bot = TradingBot(demo=True)    # demo bot (fed by fake ticks 24/7)
+bot = TradingBot(strategy="orb")                  # live bot: ORB strategy
+demo_bot = TradingBot(demo=True, strategy="scalp") # demo bot: scalp strategy (no real market open)
 bot_clients: set[WebSocket] = set()
 demo_bot_task = None
 
@@ -452,7 +452,9 @@ async def replay_feed(speed: float = 3.0):
     print(f"[Replay] Starting: {total:,} ticks ({source}), "
           f"{real_duration / 60:.0f}min market time at {speed}x → ~{est_minutes:.0f}min replay")
 
-    # Phase 2: Reset demo bot and start
+    # Phase 2: Reset demo bot and switch to ORB for replay (real market timestamps)
+    demo_bot.strategy = "orb"
+    demo_bot.warmup_seconds = 10  # ORB warmup
     demo_bot.reset()
     replay_active = True
 
@@ -727,7 +729,9 @@ async def stop_replay():
         replay_task.cancel()
         replay_task = None
 
-    # Restart normal demo feed with fresh bot
+    # Restart normal demo feed with fresh bot (switch back to scalp for demo)
+    demo_bot.strategy = "scalp"
+    demo_bot.warmup_seconds = 30  # demo warmup
     demo_bot.reset()
     demo_bot_task = asyncio.create_task(demo_bot_feed())
     print("[Replay] Stopped, demo feed restarted")

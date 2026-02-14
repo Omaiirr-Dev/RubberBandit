@@ -108,6 +108,93 @@ class DayTracker:
         self.day_low = float("inf")
 
 
+class OpeningRange:
+    """Tracks the high/low during the first N minutes after market open (9:30 AM ET)."""
+
+    # Market open = 14:30 UTC (9:30 AM ET)
+    MARKET_OPEN_UTC_HOUR = 14
+    MARKET_OPEN_UTC_MINUTE = 30
+
+    def __init__(self, duration_seconds: int = 3600):
+        self.duration = duration_seconds
+        self.market_open_ts = None
+        self.or_high = 0.0
+        self.or_low = float("inf")
+        self.or_volume = 0.0
+        self.or_tick_count = 0
+        self.is_complete = False
+        self._last_date = None
+
+    def _compute_market_open(self, timestamp: float):
+        """Compute today's market open timestamp (14:30 UTC) from a tick's timestamp."""
+        dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        market_open_dt = dt.replace(
+            hour=self.MARKET_OPEN_UTC_HOUR,
+            minute=self.MARKET_OPEN_UTC_MINUTE,
+            second=0, microsecond=0
+        )
+        return market_open_dt.timestamp()
+
+    def add_tick(self, price: float, volume: float, timestamp: float):
+        """Update opening range with a new tick."""
+        # Auto-reset on new trading day
+        tick_date = datetime.fromtimestamp(timestamp, tz=_ET).date()
+        if self._last_date is not None and tick_date != self._last_date:
+            self.reset()
+        self._last_date = tick_date
+
+        # Set market open on first tick
+        if self.market_open_ts is None:
+            self.market_open_ts = self._compute_market_open(timestamp)
+
+        # Don't accumulate before market open
+        if timestamp < self.market_open_ts:
+            return
+
+        # Check if OR period is complete
+        elapsed = timestamp - self.market_open_ts
+        if elapsed >= self.duration:
+            self.is_complete = True
+            return
+
+        # Update range during formation
+        self.or_tick_count += 1
+        self.or_volume += volume
+        if price > self.or_high:
+            self.or_high = price
+        if price < self.or_low:
+            self.or_low = price
+
+    @property
+    def or_range(self) -> float:
+        """Height of the opening range."""
+        if self.or_low == float("inf") or self.or_high == 0:
+            return 0.0
+        return self.or_high - self.or_low
+
+    @property
+    def or_mid(self) -> float:
+        """Midpoint of the opening range."""
+        if self.or_range == 0:
+            return 0.0
+        return (self.or_high + self.or_low) / 2.0
+
+    def elapsed_minutes(self, now: float) -> float:
+        """Minutes elapsed since market open."""
+        if self.market_open_ts is None:
+            return 0.0
+        return max(0, (now - self.market_open_ts) / 60.0)
+
+    def reset(self):
+        self.market_open_ts = None
+        self.or_high = 0.0
+        self.or_low = float("inf")
+        self.or_volume = 0.0
+        self.or_tick_count = 0
+        self.is_complete = False
+        self._last_date = None
+
+
 class TradingEngine:
     def __init__(self, window_seconds: int = 300):
         self.window_seconds = window_seconds
@@ -135,6 +222,15 @@ class TradingEngine:
         self.context_low = 0.0
         self.context_vwap = 0.0
         self.context_ticks = 0
+        # ATR state (14-period on 1-minute candles)
+        self.atr_period = 14
+        self.atr_candle_seconds = 60
+        self.atr_candles = deque(maxlen=self.atr_period + 1)
+        self.atr_current_candle = None  # {"start": ts, "o": p, "h": p, "l": p, "c": p}
+        self.atr_value = 0.0
+        self.atr_ready = False
+        # Session volume tracking (for RVOL)
+        self.session_tick_count = 0
 
     def _prune_window(self, now: float):
         cutoff = now - self.window_seconds
@@ -145,8 +241,10 @@ class TradingEngine:
         now = timestamp or time.time()
         self.ticks.append((now, price, volume))
         self.last_price = price
+        self.session_tick_count += 1
         self._prune_window(now)
         self._update_vwap(price, volume)
+        self._update_atr(price, now)
         self._calculate_levels()
         self._calculate_signal()
 
@@ -155,6 +253,71 @@ class TradingEngine:
         self.vwap_cumulative_vol += volume
         if self.vwap_cumulative_vol > 0:
             self.vwap = self.vwap_cumulative_pv / self.vwap_cumulative_vol
+
+    def _update_atr(self, price: float, now: float):
+        """Update ATR using 1-minute candles built from tick data."""
+        if self.atr_current_candle is None:
+            self.atr_current_candle = {
+                "start": now, "o": price, "h": price, "l": price, "c": price
+            }
+            return
+
+        candle = self.atr_current_candle
+        # Check if current candle period has ended
+        if now - candle["start"] >= self.atr_candle_seconds:
+            # Finalize candle and push
+            self.atr_candles.append((candle["o"], candle["h"], candle["l"], candle["c"]))
+            # Start new candle
+            self.atr_current_candle = {
+                "start": now, "o": price, "h": price, "l": price, "c": price
+            }
+            # Calculate ATR when we have enough candles
+            if len(self.atr_candles) >= 2:
+                self._calculate_atr()
+        else:
+            # Update current candle
+            if price > candle["h"]:
+                candle["h"] = price
+            if price < candle["l"]:
+                candle["l"] = price
+            candle["c"] = price
+
+    def _calculate_atr(self):
+        """Compute ATR using Wilder's smoothing over completed candles."""
+        candles = list(self.atr_candles)
+        if len(candles) < 2:
+            return
+
+        # Compute true ranges
+        true_ranges = []
+        for i in range(1, len(candles)):
+            o, h, l, c = candles[i]
+            prev_c = candles[i - 1][3]  # previous close
+            tr = max(h - l, abs(h - prev_c), abs(l - prev_c))
+            true_ranges.append(tr)
+
+        if not true_ranges:
+            return
+
+        if len(true_ranges) < self.atr_period:
+            # Simple average until we have enough data
+            self.atr_value = sum(true_ranges) / len(true_ranges)
+        else:
+            # Wilder's smoothing: ATR = ((prev_ATR * (n-1)) + current_TR) / n
+            if not self.atr_ready:
+                # Seed: simple average of first atr_period TRs
+                self.atr_value = sum(true_ranges[:self.atr_period]) / self.atr_period
+                self.atr_ready = True
+            else:
+                n = self.atr_period
+                self.atr_value = (self.atr_value * (n - 1) + true_ranges[-1]) / n
+
+    @property
+    def avg_tick_volume(self) -> float:
+        """Average volume per tick for the session (for RVOL calculation)."""
+        if self.session_tick_count == 0:
+            return 1.0
+        return self.vwap_cumulative_vol / self.session_tick_count
 
     def _calculate_levels(self):
         if len(self.ticks) < 5:
@@ -305,6 +468,8 @@ class TradingEngine:
             "context_low": round(self.context_low, 4),
             "context_vwap": round(self.context_vwap, 4),
             "context_ticks": self.context_ticks,
+            "atr": round(self.atr_value, 4),
+            "atr_ready": self.atr_ready,
         }
 
     def load_context(self, bars: list):
@@ -355,3 +520,9 @@ class TradingEngine:
         self.signal_score = 0
         self.action = "WAIT"
         self.clear_context()
+        # Reset ATR
+        self.atr_candles.clear()
+        self.atr_current_candle = None
+        self.atr_value = 0.0
+        self.atr_ready = False
+        self.session_tick_count = 0

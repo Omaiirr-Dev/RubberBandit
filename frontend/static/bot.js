@@ -383,6 +383,7 @@
   function updateStatusPill(status, warmupPct) {
     const map = {
       WARMING_UP: ["WARMING UP", "warming"],
+      FORMING_OR: ["FORMING OR", "warming"],
       WATCHING: ["WATCHING", "watching"],
       ENTERING: ["ENTERING", "entering"],
       IN_POSITION: ["IN POSITION", "in-position"],
@@ -393,12 +394,13 @@
     statusPill.textContent = text;
     statusPill.className = "status-pill " + cls;
 
-    // Warmup progress
-    if (status === "WARMING_UP") {
+    // Warmup / OR formation progress
+    if (status === "WARMING_UP" || status === "FORMING_OR") {
       warmupTrack.style.display = "";
       warmupPct = warmupPct || 0;
       warmupFill.style.width = warmupPct + "%";
-      document.getElementById("warmup-pct").textContent = warmupPct + "%";
+      const label = status === "FORMING_OR" ? warmupPct + "% OR" : warmupPct + "%";
+      document.getElementById("warmup-pct").textContent = label;
       document.getElementById("warmup-pct").style.display = "";
     } else {
       warmupTrack.style.display = "none";
@@ -417,7 +419,10 @@
     aiCard.className = "ai-card active";
 
     // Map pattern status to badge
-    if (rec === "SCAN") {
+    if (rec === "FORMING") {
+      aiBadge.textContent = "FORMING";
+      aiBadge.className = "ai-badge scanning";
+    } else if (rec === "SCAN") {
       aiBadge.textContent = "SCAN";
       aiBadge.className = "ai-badge scanning";
     } else if (rec === "BUY") {
@@ -429,7 +434,17 @@
     }
 
     aiConf.textContent = Math.round(confidence * 100) + "%";
-    aiTimer.textContent = "";
+    // Show strategy label and ORB info
+    let extra = "";
+    if (s.strategy === "orb") {
+      extra = " [ORB]";
+      if (s.or_high && s.or_low) {
+        extra += " H:" + s.or_high.toFixed(2) + " L:" + s.or_low.toFixed(2);
+      }
+      if (s.trailing_stop) extra += " TS:" + s.trailing_stop.toFixed(2);
+      if (s.atr_ready) extra += " ATR:" + s.atr.toFixed(2);
+    }
+    aiTimer.textContent = extra;
     aiReason.textContent = reason;
   }
 
@@ -473,6 +488,10 @@
       if (m.price < minP) minP = m.price;
       if (m.price > maxP) maxP = m.price;
     }
+    // Include ORB levels in chart range
+    const s_range = d.state;
+    if (s_range && s_range.or_high && s_range.or_high > maxP) maxP = s_range.or_high;
+    if (s_range && s_range.or_low && s_range.or_low < minP) minP = s_range.or_low;
     const pRange = maxP - minP || 1;
     const margin = pRange * 0.08;
     minP -= margin;
@@ -531,6 +550,38 @@
       ctx.moveTo(x(prices[i - 1][0]), y(prevP));
       ctx.lineTo(x(prices[i][0]), y(currP));
       ctx.stroke();
+    }
+
+    // ORB overlay lines (OR High, OR Low, trailing stop)
+    const s_chart = d.state;
+    if (s_chart && s_chart.strategy === "orb") {
+      ctx.setLineDash([4, 4]);
+      ctx.lineWidth = 1;
+      // OR High (green dashed)
+      if (s_chart.or_high) {
+        ctx.strokeStyle = "rgba(74, 222, 128, 0.5)";
+        ctx.beginPath();
+        ctx.moveTo(pad.left, y(s_chart.or_high));
+        ctx.lineTo(W - pad.right, y(s_chart.or_high));
+        ctx.stroke();
+      }
+      // OR Low (red dashed)
+      if (s_chart.or_low) {
+        ctx.strokeStyle = "rgba(248, 113, 113, 0.5)";
+        ctx.beginPath();
+        ctx.moveTo(pad.left, y(s_chart.or_low));
+        ctx.lineTo(W - pad.right, y(s_chart.or_low));
+        ctx.stroke();
+      }
+      // Trailing stop (orange dashed)
+      if (s_chart.trailing_stop && s_chart.in_position) {
+        ctx.strokeStyle = "rgba(251, 191, 36, 0.7)";
+        ctx.beginPath();
+        ctx.moveTo(pad.left, y(s_chart.trailing_stop));
+        ctx.lineTo(W - pad.right, y(s_chart.trailing_stop));
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
     }
 
     // Trade markers
@@ -630,6 +681,10 @@
         INDICATOR_EXIT: ["IE", "tp"],
         AI_PROFIT: ["AI$", "tp"],
         AI_SELL: ["AI", "ss"],
+        PARTIAL_TP: ["PT", "tp"],
+        TRAILING_STOP: ["TS", "sl"],
+        EOD_EXIT: ["EOD", "tl"],
+        ORB_STOP: ["OS", "sl"],
       };
       const [reasonText, reasonCls] = reasonMap[t.exit_reason] || [t.exit_reason || "?", "tl"];
       const holdStr = fmtTime(t.hold_seconds);
