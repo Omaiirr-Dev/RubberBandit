@@ -953,7 +953,7 @@ class TradingBot:
             parts["UP"] = self.consecutive_up
 
         # Momentum from EMA
-        if self.ema_short > 0 and price > self.ema_short:
+        if self.ema_fast > 0 and price > self.ema_fast:
             score += 0.3
             parts["EMA"] = "above"
 
