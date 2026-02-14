@@ -337,6 +337,7 @@ async def fetch_day_trades(ticker: str, date: datetime = None) -> list:
     all_trades = []
     page_token = None
     page = 0
+    MAX_TRADES = 50000  # cap to avoid fetching 200K+ trades forever
     while True:
         params = {
             "start": day_open.isoformat(),
@@ -358,9 +359,7 @@ async def fetch_day_trades(ticker: str, date: datetime = None) -> list:
             all_trades.append((ts_sec, float(trade["p"]), float(trade["s"])))
         page += 1
         page_token = data.get("next_page_token")
-        if not page_token:
-            break
-        # Send loading progress to clients
+        # Send loading progress to clients every page
         msg = json.dumps({
             "type": "replay_loading",
             "status": f"Fetching trades... page {page} ({len(all_trades):,} trades)",
@@ -370,6 +369,8 @@ async def fetch_day_trades(ticker: str, date: datetime = None) -> list:
                 await ws.send_text(msg)
             except Exception:
                 pass
+        if not page_token or len(all_trades) >= MAX_TRADES:
+            break
     return all_trades
 
 
