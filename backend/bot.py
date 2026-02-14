@@ -110,7 +110,7 @@ ORB_RVOL_THRESHOLD = 1.5          # need 1.5× session avg volume for entry
 ORB_EOD_EXIT_HOUR = 15            # 3:45 PM ET (hour)
 ORB_EOD_EXIT_MINUTE = 45          # 3:45 PM ET (minute)
 ORB_COOLDOWN_SECONDS = 30         # 30s cooldown between ORB trades
-ORB_MAX_TRADES_PER_DAY = 3        # max 3 ORB trades per session
+ORB_MAX_TRADES_PER_DAY = 5        # max 3 ORB trades per session
 ORB_WARMUP_SECONDS = 10           # minimal warmup for ORB mode
 ORB_MIN_RANGE = 0.10              # minimum OR range in dollars (skip if too tight)
 _ET = timezone(timedelta(hours=-5))  # US Eastern timezone
@@ -881,7 +881,7 @@ class TradingBot:
                 (dt.hour == ORB_EOD_EXIT_HOUR and dt.minute >= ORB_EOD_EXIT_MINUTE))
 
     def _check_orb_entry(self, price: float, now: float) -> bool:
-        """Check all ORB breakout entry conditions."""
+        """Score-based ORB entry: accumulates points, relaxes over time."""
         orng = self.opening_range
 
         # Must have a valid opening range
@@ -889,61 +889,110 @@ class TradingBot:
             self.pattern_reason = f"OR range too tight (${orng.or_range:.2f} < ${ORB_MIN_RANGE})"
             return False
 
-        # 1. Price must break above OR High
-        if price <= orng.or_high:
-            self.pattern_reason = (
-                f"Waiting for breakout above ${orng.or_high:.2f} "
-                f"(price=${price:.2f}, gap=${orng.or_high - price:.2f})"
-            )
-            self.pattern_confidence = 0.0
-            return False
-
+        score = 0.0
         parts = {}
-        parts["ORB"] = round(orng.or_high, 2)
+        or_mid = orng.or_mid
 
-        # 2. VWAP confirmation: price must be above VWAP
+        # Time pressure: lower threshold the longer we wait without a trade
+        # At OR complete: need 4.0 pts. After 2 hours of watching: need 2.0 pts.
+        time_since_or = now - self.state_entered_at
+        hours_waiting = time_since_or / 3600.0
+        threshold = max(2.0, 4.0 - hours_waiting * 1.0)
+
+        # --- Setup A: Breakout above OR High (classic ORB) ---
+        if price > orng.or_high:
+            score += 2.0
+            parts["BRK"] = f"+{price - orng.or_high:.2f}"
+
+        # --- Setup B: Bounce off OR Low (support buy) ---
+        elif price <= orng.or_low + orng.or_range * 0.10:
+            score += 1.5
+            parts["BOUNCE"] = f"${price:.2f}"
+
+        # --- Setup C: Near OR Mid with momentum (mean-reversion) ---
+        elif abs(price - or_mid) < orng.or_range * 0.15:
+            if self.consecutive_up >= 2 or (self.macd_ready and self.macd_histogram > 0):
+                score += 1.0
+                parts["MID"] = f"${price:.2f}"
+
+        # VWAP confirmation
         vwap = self.engine.vwap
-        if vwap > 0 and price <= vwap:
-            self.pattern_reason = f"Breakout but below VWAP (${vwap:.2f})"
-            self.pattern_confidence = 0.2
-            return False
-        parts["VWAP"] = round(vwap, 2)
+        if vwap > 0:
+            if price > vwap:
+                score += 1.0
+                parts["VWAP"] = "above"
+            elif price > vwap * 0.998:  # within 0.2% counts as neutral
+                score += 0.3
+                parts["VWAP"] = "~near"
 
-        # 3. Volume surge: RVOL > threshold
+        # Volume surge
         avg_vol = self.engine.avg_tick_volume
         rvol = self.last_volume / avg_vol if avg_vol > 0 else 1.0
-        if rvol < ORB_RVOL_THRESHOLD:
-            self.pattern_reason = f"Low volume (RVOL={rvol:.1f}x < {ORB_RVOL_THRESHOLD}x)"
-            self.pattern_confidence = 0.3
-            return False
-        parts["RVOL"] = round(rvol, 1)
+        if rvol >= ORB_RVOL_THRESHOLD:
+            score += 1.0
+            parts["RVOL"] = f"{rvol:.1f}x"
+        elif rvol >= 1.0:
+            score += 0.3
+            parts["RVOL"] = f"{rvol:.1f}x"
 
-        # 4. Indicator confirmation (optional boosters, not gates)
-        confirms = 0
-        if self.rsi_ready and self.rsi_value < RSI_OVERBOUGHT:
-            confirms += 1
-            parts["RSI"] = round(self.rsi_value, 0)
+        # Indicator confirmation
+        if self.rsi_ready:
+            if 30 < self.rsi_value < 70:
+                score += 0.5
+                parts["RSI"] = f"{self.rsi_value:.0f}"
+            elif self.rsi_value <= 30:  # oversold = great for bounce
+                score += 1.0
+                parts["RSI"] = f"{self.rsi_value:.0f}os"
+
         if self.macd_ready and self.macd_histogram > 0:
-            confirms += 1
+            score += 0.5
             parts["MACD"] = "bull"
-        if self.consecutive_up >= 2:
-            confirms += 1
-            parts["UPTICK"] = self.consecutive_up
 
-        # All core conditions met
+        if self.consecutive_up >= 2:
+            score += 0.5
+            parts["UP"] = self.consecutive_up
+
+        # Momentum from EMA
+        if self.ema_short > 0 and price > self.ema_short:
+            score += 0.3
+            parts["EMA"] = "above"
+
         signals = ', '.join(f"{k}={v}" for k, v in parts.items())
-        self.pattern_reason = f"ORB BREAKOUT [{signals}]"
-        self.pattern_confidence = min(1.0, 0.5 + confirms * 0.15)
-        return True
+        self.pattern_reason = (
+            f"Score {score:.1f}/{threshold:.1f} [{signals}]"
+        )
+        self.pattern_confidence = min(1.0, score / 4.0)
+
+        if score >= threshold:
+            self.pattern_reason = f"ORB ENTRY {score:.1f}pts [{signals}]"
+            return True
+
+        return False
 
     def _calculate_orb_position_size(self, price: float) -> float:
         """Calculate shares using 1% risk rule: Q = (Capital × Risk%) / (Entry - StopLoss)."""
-        stop_price = self.opening_range.or_low
+        orng = self.opening_range
+
+        # Stop loss depends on entry type:
+        # Breakout (above OR High): stop at OR Low
+        # Bounce/Mid: stop at OR Low - 0.5 * range (tighter relative)
+        if price > orng.or_high:
+            stop_price = orng.or_low
+        else:
+            # For bounce/mid entries, use ATR-based stop if available
+            if self.engine.atr_ready and self.engine.atr_value > 0:
+                stop_price = price - 2.0 * self.engine.atr_value
+            else:
+                stop_price = price - orng.or_range * 0.5
+            # Never set stop below OR low
+            stop_price = max(stop_price, orng.or_low - orng.or_range * 0.25)
+
         risk_per_share = price - stop_price
-        if risk_per_share <= 0:
+        if risk_per_share <= 0.01:
             return 0.0
 
         self.orb_risk_per_share = risk_per_share
+        self.orb_entry_stop_loss = stop_price
         risk_capital = self.cash * ORB_RISK_PCT
         shares = risk_capital / risk_per_share
 
