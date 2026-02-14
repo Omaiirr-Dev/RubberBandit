@@ -515,14 +515,12 @@ async def replay_feed(speed: float = 60.0):
 
         current_speed = POST_OR_SPEED if or_done else OR_SPEED
 
-        # Broadcast: every tick during post-OR, every 20th during OR formation
-        should_broadcast = True
+        # Broadcast: every 20th tick during OR, every 10th post-OR
+        # At high speed we must throttle AND yield regularly so WS flushes
         if not or_done:
             should_broadcast = (i % 20 == 0) or (i == 0)
-        elif i > 0 and source == "trades":
-            gap_from_prev = sim_ts - ticks[i - 1][0]
-            if gap_from_prev < 0.05 and i % 3 != 0:
-                should_broadcast = False
+        else:
+            should_broadcast = (i % 10 == 0)
 
         if should_broadcast:
             elapsed_market = sim_ts - ticks[0][0]
@@ -536,14 +534,12 @@ async def replay_feed(speed: float = 60.0):
                 "replay_total": total,
                 "replay_market_time": round(elapsed_market / 60, 1),
             })
+            # Yield to event loop so websocket actually flushes to browser
+            await asyncio.sleep(0.02)
 
-        # Proportional sleep at current speed
-        if i < total - 1:
-            real_gap = ticks[i + 1][0] - sim_ts
-            replay_gap = real_gap / current_speed
-            replay_gap = min(replay_gap, 1.0)
-            if replay_gap > 0.003:
-                await asyncio.sleep(replay_gap)
+        # Small yield every 100 ticks even without broadcast to stay responsive
+        elif i % 100 == 0:
+            await asyncio.sleep(0)
 
     # Phase 4: Complete
     replay_active = False
