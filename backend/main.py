@@ -416,7 +416,7 @@ async def _notify_bot_clients(msg_data: dict):
     bot_clients.difference_update(dead)
 
 
-async def replay_feed(speed: float = 3.0):
+async def replay_feed(speed: float = 60.0):
     """Replay real NVDA market data through the demo bot at Nx speed.
     Fetches every real trade from Alpaca, preserving exact price action.
     """
@@ -719,7 +719,7 @@ async def debug_state():
 
 
 @app.post("/api/replay")
-async def start_replay(speed: float = 3.0):
+async def start_replay(speed: float = 60.0):
     """Start replaying today's real market data through the demo bot."""
     global replay_task, replay_active, demo_bot_task
 
