@@ -416,19 +416,23 @@ async def _notify_bot_clients(msg_data: dict):
     bot_clients.difference_update(dead)
 
 
-async def replay_feed(speed: float = 60.0):
-    """Replay real NVDA market data through the demo bot at Nx speed.
-    Fetches every real trade from Alpaca, preserving exact price action.
+async def replay_feed(target_date: datetime = None):
+    """Replay real NVDA market data through the demo bot.
+    If target_date is provided, replay that specific date.
+    Otherwise, try today then fall back to recent trading days.
     """
     global replay_active, demo_bot
 
-    # Phase 1: Fetch real trades — try today first, then recent trading days
+    # Phase 1: Fetch real trades
     ticks = []
     source = "trades"
     replay_date_label = "today"
 
-    # Build list of dates to try: today + last 5 weekdays
-    dates_to_try = [datetime.now(timezone.utc)] + _last_trading_days(5)
+    # Build list of dates to try
+    if target_date:
+        dates_to_try = [target_date]
+    else:
+        dates_to_try = [datetime.now(timezone.utc)] + _last_trading_days(5)
 
     for try_date in dates_to_try:
         date_str = try_date.strftime("%a %b %d")
@@ -465,7 +469,7 @@ async def replay_feed(speed: float = 60.0):
     if not ticks:
         await _notify_bot_clients({
             "type": "replay_error",
-            "reason": "No market data available for recent trading days",
+            "reason": f"No market data available for {replay_date_label}" if target_date else "No market data available for recent trading days",
         })
         replay_active = False
         return
@@ -726,8 +730,8 @@ async def debug_state():
 
 
 @app.post("/api/replay")
-async def start_replay(speed: float = 60.0):
-    """Start replaying today's real market data through the demo bot."""
+async def start_replay(speed: float = 60.0, date: str = None):
+    """Start replaying market data through the demo bot. Optionally specify a date (YYYY-MM-DD)."""
     global replay_task, replay_active, demo_bot_task
 
     if replay_active:
@@ -736,8 +740,15 @@ async def start_replay(speed: float = 60.0):
     if not ALPACA_API_KEY or ALPACA_API_KEY == "your_alpaca_api_key_here":
         return {"ok": False, "reason": "No Alpaca API key configured"}
 
-    # Clamp speed
-    speed = max(1.0, min(20.0, speed))
+    # Parse optional date
+    replay_date = None
+    if date:
+        try:
+            replay_date = datetime.strptime(date, "%Y-%m-%d").replace(
+                hour=12, minute=0, second=0, tzinfo=timezone.utc
+            )
+        except ValueError:
+            return {"ok": False, "reason": f"Invalid date format: {date} (use YYYY-MM-DD)"}
 
     # Stop normal demo feed so it doesn't interfere
     if demo_bot_task:
@@ -746,8 +757,8 @@ async def start_replay(speed: float = 60.0):
 
     # Mark active before starting the task
     replay_active = True
-    replay_task = asyncio.create_task(replay_feed(speed=speed))
-    return {"ok": True, "speed": speed}
+    replay_task = asyncio.create_task(replay_feed(target_date=replay_date))
+    return {"ok": True, "date": date or "auto"}
 
 
 @app.post("/api/replay/stop")

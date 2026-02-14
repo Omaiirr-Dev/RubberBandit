@@ -106,17 +106,21 @@
     replayBtn.textContent = "LOADING...";
     replayBtn.disabled = true;
     try {
-      const resp = await fetch("/api/replay", { method: "POST" });
+      const dateInput = document.getElementById("replay-date");
+      const params = new URLSearchParams();
+      if (dateInput.value) params.set("date", dateInput.value);
+      const url = "/api/replay" + (params.toString() ? "?" + params : "");
+      const resp = await fetch(url, { method: "POST" });
       const result = await resp.json();
       if (!result.ok) {
         alert("Replay failed: " + (result.reason || "Unknown error"));
-        replayBtn.textContent = "REPLAY TODAY";
+        replayBtn.textContent = "REPLAY";
         replayBtn.disabled = false;
       }
       // Button state will be updated by replay_start message
     } catch (e) {
       alert("Replay error: " + e.message);
-      replayBtn.textContent = "REPLAY TODAY";
+      replayBtn.textContent = "REPLAY";
       replayBtn.disabled = false;
     }
   };
@@ -138,7 +142,7 @@
       replayBtn.onclick = window.stopReplay;
       replayBar.style.display = "flex";
     } else {
-      replayBtn.textContent = "REPLAY TODAY";
+      replayBtn.textContent = "REPLAY";
       replayBtn.className = "replay-btn";
       replayBtn.disabled = false;
       replayBtn.onclick = window.startReplay;
@@ -222,7 +226,8 @@
       // Auto-switch to demo tab
       window.switchTab("demo");
       setReplayUI(true);
-      replayLabel.textContent = "REPLAYING " + (data.source === "trades" ? "REAL TICKS" : "BARS");
+      const dateLabel = data.replay_date ? " " + data.replay_date : "";
+      replayLabel.textContent = "REPLAYING" + dateLabel;
       const est = data.est_replay_minutes || 0;
       replayInfo.textContent = "~" + Math.round(est) + "min | " + (data.total_ticks || 0).toLocaleString() + " ticks";
 

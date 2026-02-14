@@ -538,6 +538,17 @@
       min-width: 60px;
       text-align: right;
     }
+    .replay-date {
+      background: var(--bg2);
+      border: 1px solid var(--dim);
+      color: var(--fg);
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-size: 9px;
+      padding: 3px 6px;
+      border-radius: 5px;
+      width: 105px;
+      color-scheme: dark;
+    }
     .replay-btn {
       background: none;
       border: 1px solid var(--yellow);
@@ -574,7 +585,8 @@
     <div class="header">
       <span class="logo">RubberBand BOT</span>
       <div class="header-controls">
-        <button class="replay-btn" id="replay-btn" onclick="startReplay()">REPLAY TODAY</button>
+        <input type="date" id="replay-date" class="replay-date">
+        <button class="replay-btn" id="replay-btn" onclick="startReplay()">REPLAY</button>
         <a href="/" class="nav-btn">DASHBOARD</a>
         <div class="status">
           <span id="status-text">CONNECTING</span>
