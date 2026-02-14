@@ -494,52 +494,48 @@ async def replay_feed(speed: float = 60.0):
         "est_replay_minutes": round(est_minutes, 1),
     })
 
-    # Phase 3: Feed ticks with proportional timing
-    # OR formation: 120x speed (~30s real time for 60min market time)
-    # Post-OR: 100x speed (~3-4min real time for remaining ~5.5hrs)
-    OR_SPEED = 120.0
-    POST_OR_SPEED = 100.0
+    # Phase 3: Feed ticks in chunks, broadcast once per chunk
+    # OR: big chunks (fast-forward), Post-OR: smaller chunks (watchable)
+    OR_CHUNK = 200       # process 200 ticks then broadcast (~30s for 60min OR)
+    POST_OR_CHUNK = 50   # process 50 ticks then broadcast (smooth chart updates)
+    BROADCAST_DELAY = 0.03  # 30ms between broadcasts = ~33 updates/sec max
     or_done = False
-    for i, (sim_ts, price, vol) in enumerate(ticks):
+    i = 0
+    while i < total:
         if not replay_active:
             break
 
-        demo_bot.add_tick(price, vol, sim_ts)
+        chunk_size = POST_OR_CHUNK if or_done else OR_CHUNK
+        chunk_end = min(i + chunk_size, total)
 
-        # Check if OR formation just completed
+        # Process a chunk of ticks without yielding
+        for j in range(i, chunk_end):
+            sim_ts, price, vol = ticks[j]
+            demo_bot.add_tick(price, vol, sim_ts)
+
+        # Check if OR just completed
         if not or_done:
             state = demo_bot.get_state()
             if state.get("or_complete") or state.get("bot_state") not in ("FORMING_OR", "WARMING_UP"):
                 or_done = True
-                print(f"[Replay] OR formation done at tick {i:,}/{total:,} — switching to post-OR speed")
+                print(f"[Replay] OR done at tick {chunk_end:,}/{total:,}")
 
-        current_speed = POST_OR_SPEED if or_done else OR_SPEED
+        # Broadcast latest state after each chunk
+        last_ts = ticks[chunk_end - 1][0]
+        elapsed_market = last_ts - ticks[0][0]
+        await _notify_bot_clients({
+            "type": "bot_update",
+            "live": bot.get_state(),
+            "demo": demo_bot.get_state(),
+            "replay_ts": int(last_ts * 1000),
+            "replay_progress": round(chunk_end / total * 100, 1),
+            "replay_tick": chunk_end,
+            "replay_total": total,
+            "replay_market_time": round(elapsed_market / 60, 1),
+        })
+        await asyncio.sleep(BROADCAST_DELAY)
 
-        # Broadcast: every 20th tick during OR, every 10th post-OR
-        # At high speed we must throttle AND yield regularly so WS flushes
-        if not or_done:
-            should_broadcast = (i % 20 == 0) or (i == 0)
-        else:
-            should_broadcast = (i % 10 == 0)
-
-        if should_broadcast:
-            elapsed_market = sim_ts - ticks[0][0]
-            await _notify_bot_clients({
-                "type": "bot_update",
-                "live": bot.get_state(),
-                "demo": demo_bot.get_state(),
-                "replay_ts": int(sim_ts * 1000),
-                "replay_progress": round((i + 1) / total * 100, 1),
-                "replay_tick": i + 1,
-                "replay_total": total,
-                "replay_market_time": round(elapsed_market / 60, 1),
-            })
-            # Yield to event loop so websocket actually flushes to browser
-            await asyncio.sleep(0.02)
-
-        # Small yield every 100 ticks even without broadcast to stay responsive
-        elif i % 100 == 0:
-            await asyncio.sleep(0)
+        i = chunk_end
 
     # Phase 4: Complete
     replay_active = False
