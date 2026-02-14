@@ -495,7 +495,10 @@ async def replay_feed(speed: float = 60.0):
     })
 
     # Phase 3: Feed ticks with proportional timing
-    # Fast-forward through OR formation: feed ticks instantly, update UI every 500 ticks
+    # OR formation: 120x speed (~30s real time for 60min market time)
+    # Post-OR: 100x speed (~3-4min real time for remaining ~5.5hrs)
+    OR_SPEED = 120.0
+    POST_OR_SPEED = 100.0
     or_done = False
     for i, (sim_ts, price, vol) in enumerate(ticks):
         if not replay_active:
@@ -508,28 +511,15 @@ async def replay_feed(speed: float = 60.0):
             state = demo_bot.get_state()
             if state.get("or_complete") or state.get("bot_state") not in ("FORMING_OR", "WARMING_UP"):
                 or_done = True
-                print(f"[Replay] OR formation done at tick {i:,}/{total:,} — switching to normal speed")
+                print(f"[Replay] OR formation done at tick {i:,}/{total:,} — switching to post-OR speed")
 
-        # During OR formation: fast-forward (no sleep, sparse UI updates)
-        if not or_done:
-            if i % 500 == 0 or i == 0:
-                elapsed_market = sim_ts - ticks[0][0]
-                await _notify_bot_clients({
-                    "type": "bot_update",
-                    "live": bot.get_state(),
-                    "demo": demo_bot.get_state(),
-                    "replay_ts": int(sim_ts * 1000),
-                    "replay_progress": round((i + 1) / total * 100, 1),
-                    "replay_tick": i + 1,
-                    "replay_total": total,
-                    "replay_market_time": round(elapsed_market / 60, 1),
-                })
-                await asyncio.sleep(0.05)  # tiny yield to keep UI responsive
-            continue
+        current_speed = POST_OR_SPEED if or_done else OR_SPEED
 
-        # Normal playback after OR is formed
+        # Broadcast: every tick during post-OR, every 20th during OR formation
         should_broadcast = True
-        if i > 0 and source == "trades":
+        if not or_done:
+            should_broadcast = (i % 20 == 0) or (i == 0)
+        elif i > 0 and source == "trades":
             gap_from_prev = sim_ts - ticks[i - 1][0]
             if gap_from_prev < 0.05 and i % 3 != 0:
                 should_broadcast = False
@@ -547,12 +537,12 @@ async def replay_feed(speed: float = 60.0):
                 "replay_market_time": round(elapsed_market / 60, 1),
             })
 
-        # Proportional sleep: preserve real timing, just sped up
+        # Proportional sleep at current speed
         if i < total - 1:
             real_gap = ticks[i + 1][0] - sim_ts
-            replay_gap = real_gap / speed
-            replay_gap = min(replay_gap, 2.0)  # cap long gaps at 2s
-            if replay_gap > 0.005:
+            replay_gap = real_gap / current_speed
+            replay_gap = min(replay_gap, 1.0)
+            if replay_gap > 0.003:
                 await asyncio.sleep(replay_gap)
 
     # Phase 4: Complete
