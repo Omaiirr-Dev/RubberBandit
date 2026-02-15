@@ -424,6 +424,24 @@ async def replay_feed(target_date: datetime = None):
     """
     global replay_active, demo_bot
 
+    try:
+        await _replay_feed_inner(target_date)
+    except asyncio.CancelledError:
+        print("[Replay] Cancelled")
+    except Exception as e:
+        print(f"[Replay] CRASHED: {e}")
+        import traceback; traceback.print_exc()
+        await _notify_bot_clients({
+            "type": "replay_error",
+            "reason": f"Replay crashed: {e}",
+        })
+    finally:
+        replay_active = False
+
+
+async def _replay_feed_inner(target_date: datetime = None):
+    global replay_active, demo_bot
+
     # Phase 1: Fetch real trades
     ticks = []
     source = "trades"
@@ -472,16 +490,15 @@ async def replay_feed(target_date: datetime = None):
             "type": "replay_error",
             "reason": f"No market data available for {replay_date_label}" if target_date else "No market data available for recent trading days",
         })
-        replay_active = False
         return
 
     total = len(ticks)
     # Calculate estimated replay duration
     real_duration = ticks[-1][0] - ticks[0][0]
-    est_minutes = real_duration / speed / 60
+    market_minutes = real_duration / 60
 
     print(f"[Replay] Starting {replay_date_label}: {total:,} ticks ({source}), "
-          f"{real_duration / 60:.0f}min market time at {speed}x → ~{est_minutes:.0f}min replay")
+          f"{market_minutes:.0f}min market time")
 
     # Phase 2: Reset demo bot and switch to ORB for replay (real market timestamps)
     demo_bot.strategy = "orb"
@@ -492,11 +509,9 @@ async def replay_feed(target_date: datetime = None):
     await _notify_bot_clients({
         "type": "replay_start",
         "total_ticks": total,
-        "speed": speed,
         "source": source,
         "replay_date": replay_date_label,
-        "market_minutes": round(real_duration / 60, 1),
-        "est_replay_minutes": round(est_minutes, 1),
+        "market_minutes": round(market_minutes, 1),
     })
 
     # Phase 3: Feed ticks in chunks, broadcast once per chunk
@@ -543,7 +558,6 @@ async def replay_feed(target_date: datetime = None):
         i = chunk_end
 
     # Phase 4: Complete
-    replay_active = False
     done_state = demo_bot.get_state()
     wins = sum(1 for t in demo_bot.trades if t["pnl"] > 0)
     total_trades = len(demo_bot.trades)
