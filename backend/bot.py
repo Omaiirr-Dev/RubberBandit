@@ -103,16 +103,17 @@ ML_SAVE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ml_brai
 # ---- ORB (Opening Range Breakout) Strategy Parameters ----
 ORB_DURATION_SECONDS = 3600       # 60-minute opening range
 ORB_RISK_PCT = 0.01               # 1% of capital risked per trade
-ORB_ATR_TRAILING_MULT = 2.0       # trailing stop = max_price - 2.0 × ATR
+ORB_ATR_TRAILING_MULT = 1.5       # trailing stop = max_price - 1.5 × ATR (tighter = lock gains faster)
 ORB_PARTIAL_EXIT_RATIO = 0.50     # sell 50% at first target
-ORB_PARTIAL_RR_TARGET = 1.5       # first target at 1.5× risk distance
+ORB_PARTIAL_RR_TARGET = 1.0       # first target at 1.0× risk distance (get paid sooner)
 ORB_RVOL_THRESHOLD = 1.5          # need 1.5× session avg volume for entry
 ORB_EOD_EXIT_HOUR = 15            # 3:45 PM ET (hour)
 ORB_EOD_EXIT_MINUTE = 45          # 3:45 PM ET (minute)
 ORB_COOLDOWN_SECONDS = 30         # 30s cooldown between ORB trades
-ORB_MAX_TRADES_PER_DAY = 5        # max 3 ORB trades per session
+ORB_MAX_TRADES_PER_DAY = 5        # max ORB trades per session
 ORB_WARMUP_SECONDS = 10           # minimal warmup for ORB mode
 ORB_MIN_RANGE = 0.10              # minimum OR range in dollars (skip if too tight)
+ORB_MIN_HOLD_SECONDS = 180        # hold at least 3 min before trailing/partial exits
 _ET = timezone(timedelta(hours=-5))  # US Eastern timezone
 
 # ---- Smart Filter Parameters ----
@@ -1073,13 +1074,12 @@ class TradingBot:
                 return
 
             hold_time = now - self.position_entry_time
-            dollar_pnl = (price - self.position_entry_price) * self.position_shares
 
             # Update max price for trailing stop
             if price > self.orb_max_price_since_entry:
                 self.orb_max_price_since_entry = price
 
-            # Update trailing stop: max_price - ATR_mult × ATR
+            # Update trailing stop: max_price - ATR_mult × ATR (always ratchets up)
             if self.engine.atr_ready and self.engine.atr_value > 0:
                 new_trail = self.orb_max_price_since_entry - ORB_ATR_TRAILING_MULT * self.engine.atr_value
                 if new_trail > self.orb_trailing_stop:
@@ -1087,34 +1087,34 @@ class TradingBot:
 
             exit_reason = None
 
-            # Priority 1: EOD exit (absolute — sell everything)
+            # Priority 1: EOD exit — absolute, always fires
             if self._is_past_eod(now):
                 exit_reason = "EOD_EXIT"
 
-            # Priority 2: Hard stop loss (price fell below OR low)
+            # Priority 2: Hard stop loss — always fires (no min hold)
             elif price <= self.orb_entry_stop_loss:
                 exit_reason = "ORB_STOP"
 
-            # Priority 3: Trailing stop
-            elif self.orb_trailing_stop > 0 and price <= self.orb_trailing_stop:
-                exit_reason = "TRAILING_STOP"
+            # --- Everything below requires minimum hold time ---
+            elif hold_time >= ORB_MIN_HOLD_SECONDS:
 
-            # Priority 4: Partial take profit (sell 50% at 1.5× risk)
-            elif not self.orb_partial_sold and self.orb_risk_per_share > 0:
-                target = self.position_entry_price + self.orb_risk_per_share * ORB_PARTIAL_RR_TARGET
-                if price >= target:
-                    self._execute_partial_sell(price, now, ORB_PARTIAL_EXIT_RATIO)
-                    # Move stop to breakeven for remainder
-                    self.orb_entry_stop_loss = self.position_entry_price
-                    self.orb_trailing_stop = max(self.orb_trailing_stop, self.position_entry_price)
-                    self.orb_partial_sold = True
-                    print(f"[ORB] PARTIAL TP: sold 50% at ${price:.2f}, "
-                          f"stop moved to breakeven ${self.position_entry_price:.2f}")
+                # Priority 3: Trailing stop (only after min hold so breakout has room)
+                if self.orb_trailing_stop > 0 and price <= self.orb_trailing_stop:
+                    exit_reason = "TRAILING_STOP"
 
-            # Priority 5: Indicator-based exit (bearish divergence)
-            if exit_reason is None and hold_time >= PATTERN_MIN_HOLD_EXIT and dollar_pnl > 0:
-                if self._check_indicator_exit(price) >= EXIT_INDICATOR_SCORE:
-                    exit_reason = "INDICATOR_EXIT"
+                # Priority 4: Partial take profit (sell 50% at 1.0× risk)
+                elif not self.orb_partial_sold and self.orb_risk_per_share > 0:
+                    target = self.position_entry_price + self.orb_risk_per_share * ORB_PARTIAL_RR_TARGET
+                    if price >= target:
+                        self._execute_partial_sell(price, now, ORB_PARTIAL_EXIT_RATIO)
+                        # Move stop to breakeven — remainder is a "free trade"
+                        self.orb_entry_stop_loss = self.position_entry_price
+                        self.orb_trailing_stop = max(self.orb_trailing_stop, self.position_entry_price)
+                        self.orb_partial_sold = True
+                        print(f"[ORB] PARTIAL TP: sold 50% at ${price:.2f}, "
+                              f"stop moved to breakeven ${self.position_entry_price:.2f}")
+
+            # NO indicator-based exits in ORB mode — let the stop system work
 
             if exit_reason:
                 self.exit_reason = exit_reason
