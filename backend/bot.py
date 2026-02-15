@@ -1265,7 +1265,7 @@ class TradingBot:
                   f"accuracy={self.ml.accuracy:.0%} | "
                   f"TP=${self.ml.adaptive_tp:.2f} SL=${self.ml.adaptive_sl:.2f}")
 
-        self.cash = net_proceeds
+        self.cash += net_proceeds
 
         # Clear position
         self.position_shares = 0.0
